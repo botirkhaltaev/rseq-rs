@@ -1,0 +1,51 @@
+[package]
+name = "rseq-rs"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/botirkhaltaev/rseq-rs"
+description = "Safe Linux restartable-sequence primitives"
+publish = false
+autobenches = false
+
+[lib]
+name = "rseq_rs"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+correctness = "deny"
+complexity = "deny"
+perf = "deny"
+style = "deny"
+suspicious = "deny"
+pedantic = "warn"
+
+[profile.bench]
+debug = "line-tables-only"
+lto = "fat"
+codegen-units = 1
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+libc = "0.2"
+
+[[bench]]
+name = "counter"
+harness = false
+
+[[bench]]
+name = "cached"
+harness = false
+
+[[bench]]
+name = "freelist"
+harness = false
+
+[[bench]]
+name = "drain"
+harness = false

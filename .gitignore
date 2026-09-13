@@ -1,0 +1,15 @@
+/target/
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+.env
+.env.*
+!.env.example
+*.log
+/tmp/
+perf.data
+perf.data.*
+*.perf.data
+criterion/
