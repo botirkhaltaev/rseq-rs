@@ -170,12 +170,12 @@ Standalone crate. Full RSEQ impl on `linux + x86_64` and `linux + aarch64`.
 src/lib.rs         re-exports
 src/rseq.rs        Rseq::try_new / bind / fence / words
 src/thread.rs      Thread, CpuId, compare_exchange / fetch_add
-src/words.rs       Word, Words, get, from_raw
-src/layout.rs      one usize per CPU; mmap region
+src/words.rs       Word, Words
+src/region.rs      Region (mmap or caller span)
+src/cpus.rs        Cpus (sysfs possible)
+src/membarrier.rs  Membarrier (fence)
 src/x86_64.rs      private inline asm! (not pub)
 src/aarch64.rs     private inline asm! (not pub)
-src/cpus.rs        CPU count (File, stack buffer)
-src/membarrier.rs  private syscalls (fence only)
 src/abi.rs         private Area / SIG
 benches/counter.rs librseq addv; retry-loop + bare Word
 benches/cached.rs  tcmalloc 1-deep; retry-loop + bare Word

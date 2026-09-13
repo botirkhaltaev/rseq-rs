@@ -1,9 +1,6 @@
 use core::{marker::PhantomData, ptr::NonNull, sync::atomic::AtomicUsize};
 
-use crate::{
-    layout::{self, Region},
-    thread::CpuId,
-};
+use crate::{region::Region, thread::CpuId};
 
 /// One word and the CPU it belongs to. librseq's `(v, cpu)`.
 ///
@@ -46,22 +43,8 @@ impl Word<'_> {
 
 /// Optional mmap of one word per possible CPU.
 pub struct Words {
-    backing: Backing,
+    region: Region,
     cpus: u32,
-}
-
-enum Backing {
-    Mapped(Region),
-    Raw(NonNull<u8>),
-}
-
-impl Backing {
-    const fn base(&self) -> NonNull<u8> {
-        match self {
-            Self::Mapped(region) => region.base(),
-            Self::Raw(base) => *base,
-        }
-    }
 }
 
 // SAFETY: the mapping is process-private `AtomicUsize`s. `NonNull<u8>` is
@@ -76,9 +59,8 @@ impl Words {
         if cpus == 0 {
             return None;
         }
-        let len = layout::region_len(cpus)?;
         Some(Self {
-            backing: Backing::Mapped(Region::map(len)?),
+            region: Region::map(cpus)?,
             cpus,
         })
     }
@@ -93,7 +75,7 @@ impl Words {
     pub unsafe fn from_raw(base: NonNull<u8>, cpus: u32) -> Self {
         debug_assert!(cpus > 0);
         Self {
-            backing: Backing::Raw(base),
+            region: Region::raw(base),
             cpus,
         }
     }
@@ -111,8 +93,8 @@ impl Words {
         if id >= self.cpus {
             return None;
         }
-        // SAFETY: `id` is in range for this mapping.
-        let ptr = unsafe { layout::word(self.backing.base(), id) };
+        // SAFETY: `id` is in range; mmap of usizes is aligned.
+        let ptr = unsafe { self.region.word(id) };
         Some(Word {
             ptr,
             cpu,

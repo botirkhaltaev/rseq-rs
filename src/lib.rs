@@ -27,8 +27,8 @@
 
 mod abi;
 mod cpus;
-mod layout;
 mod membarrier;
+mod region;
 mod rseq;
 mod thread;
 mod words;

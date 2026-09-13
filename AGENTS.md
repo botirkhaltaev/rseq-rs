@@ -3,6 +3,7 @@
 Scope: this repository.
 
 - Safe public API. `unsafe` only `from_raw` and private asm / syscalls.
+- No free helpers. Behavior on `Rseq` / `Thread` / `Word` / `Words` / `Cpus` / `Region` / `Membarrier`.
 - Primitive is `Thread` + `Word`. `Words` is an optional mmap. No ops on `Words`.
 - One glibc `struct rseq` per thread. User-space writes `rseq_cs` only.
 - `Word.cpu` confirms `area.cpu_id`. Do not pre-read or overlay `cpu_id_start`.

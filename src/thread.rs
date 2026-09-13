@@ -61,16 +61,11 @@ impl Thread {
         unsafe { NonNull::new_unchecked(self.area) }
     }
 
-    #[inline]
-    pub(crate) fn cpu_id_of(area: NonNull<Area>) -> u32 {
-        // SAFETY: `area` is a registered rseq TLS; the kernel writes `cpu_id`.
-        unsafe { ptr::addr_of!((*area.as_ptr()).cpu_id).read_volatile() }
-    }
-
     /// Kernel `cpu_id`. `None` if unregistered or a sentinel.
     #[must_use]
     pub fn cpu_id(&self) -> Option<CpuId> {
-        CpuId::new(Self::cpu_id_of(self.area()))
+        // SAFETY: `area` is a registered rseq TLS; the kernel writes `cpu_id`.
+        CpuId::new(unsafe { ptr::addr_of!((*self.area).cpu_id).read_volatile() })
     }
 
     /// Compare `word` to `expect` and store `new`.
