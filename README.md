@@ -32,7 +32,7 @@ let w = words.get(cpu)?;
 `get` borrows `words` — keep the region alive. Embedder field:
 `unsafe Word::from_raw(ptr, cpu)`.
 
-## Word ops (Linux x86-64)
+## Word ops (Linux x86-64 / aarch64)
 
 ```rust
 use rseq_rs::{Error, Rseq};

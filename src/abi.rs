@@ -15,7 +15,11 @@ pub(crate) const CPU_UNINIT: u32 = u32::MAX;
 /// `RSEQ_CPU_ID_REGISTRATION_FAILED` (`-2`).
 pub(crate) const CPU_REG_FAILED: u32 = u32::MAX - 1;
 /// glibc `RSEQ_SIG` on x86-64.
+#[cfg(target_arch = "x86_64")]
 pub(crate) const SIG: u32 = 0x5305_3053;
+/// glibc `RSEQ_SIG_CODE` on little-endian aarch64 (`BRK #0x45E0`).
+#[cfg(target_arch = "aarch64")]
+pub(crate) const SIG: u32 = 0xd428_bc00;
 pub(crate) const CPU_ID_OFF: usize = 4;
 pub(crate) const CS_OFF: usize = 8;
 
@@ -31,7 +35,10 @@ mod tests {
         assert_eq!(offset_of!(Area, rseq_cs), 8);
         assert_eq!(offset_of!(Area, flags), 16);
         assert_eq!(size_of::<Area>(), AREA_MIN);
+        #[cfg(target_arch = "x86_64")]
         assert_eq!(SIG, 0x5305_3053);
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(SIG, 0xd428_bc00);
         assert_eq!(CPU_ID_OFF, 4);
         assert_eq!(CS_OFF, 8);
     }
