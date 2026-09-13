@@ -76,7 +76,8 @@ is the caller's `AtomicUsize`, not a locked twin in this crate.
 never fence.
 
 Other targets: types exist; `try_new` returns `None`. Dependents compile
-everywhere. Word width is `usize` (librseq `intptr_t`).
+everywhere. Word width is `usize` (librseq `intptr_t`). Linux aarch64 uses
+the same API as x86_64.
 
 ## What #135 got wrong
 
@@ -161,9 +162,9 @@ Workspace lints. unsafe_op_in_unsafe_fn deny.
 Crate-owned `Words` may `mmap` / `munmap`. That is the OS boundary, not
 an allocator-internal heap.
 
-## Layout (v0.1)
+## Layout (v0.2)
 
-Standalone crate. Full RSEQ impl on `linux + x86_64`.
+Standalone crate. Full RSEQ impl on `linux + x86_64` and `linux + aarch64`.
 
 ```text
 src/lib.rs         re-exports
@@ -172,6 +173,7 @@ src/thread.rs      Thread, CpuId, compare_exchange / fetch_add
 src/words.rs       Word, Words, get, from_raw
 src/layout.rs      one usize per CPU; mmap region
 src/x86_64.rs      private inline asm! (not pub)
+src/aarch64.rs     private inline asm! (not pub)
 src/cpus.rs        CPU count (File, stack buffer)
 src/membarrier.rs  private syscalls (fence only)
 src/abi.rs         private Area / SIG
@@ -184,8 +186,9 @@ benches/drain.rs   tcmalloc FenceCpu + steal
 `Words::get` is `base + cpu * size_of::<AtomicUsize>()`. Zeros on crate `mmap`.
 
 `asm!` shape: `.pushsection __rseq_cs,"aw"` + local labels (PIE-safe; no
-`global_asm!` outline). `jmp entry; .long SIG; abort: entry:` then
-`lea cs(%rip)` into `area.rseq_cs`. Load `cpu_id`; abort if not `word.cpu`.
+`global_asm!` outline). Abort signature immediately before the abort IP
+(`.long SIG` on x86_64, `.inst SIG` on aarch64). Then `lea` / `adrp`+`add`
+into `area.rseq_cs`. Load `cpu_id`; abort if not `word.cpu`.
 Compare-exchange or add through `word.ptr`. Committing store last. Kernel
 abort restarts at the signed IP. CPU mismatch returns `Error::Abort`.
 No `cpu_id_start` pre-read and recheck.
@@ -211,10 +214,10 @@ Pinned `*_word` benches reuse one `Word` so the CS number is visible.
 `#135` never isolated either. Do not chase `#[inline(always)]`,
 fall-through status, or `addq` vs `xadd` without a new isolated table.
 
-### v0.2.0 — aarch64
+### v0.2.0 — aarch64 (released)
 
-Same safe API. `adrp`/`add` for `cs`, `mrs tpidr_el0`, aarch64 `SIG`.
-CI `cargo check --target aarch64-unknown-linux-gnu`.
+Same safe API. `adrp`/`add` for `cs`, `mrs tpidr_el0`, aarch64 `SIG`
+(`BRK #0x45E0`). CI `cargo check --target aarch64-unknown-linux-gnu`.
 
 ### v0.3.0 — more word ops
 

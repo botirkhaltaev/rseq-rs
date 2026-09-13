@@ -60,11 +60,17 @@ impl Rseq {
 }
 
 fn init() -> Option<Rseq> {
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    #[cfg(not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
     {
         return None;
     }
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     {
         // SAFETY: glibc publishes `__rseq_size` (0 if rseq is off).
         let size = usize::try_from(unsafe { __rseq_size }).ok()?;
@@ -81,19 +87,28 @@ fn init() -> Option<Rseq> {
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 unsafe extern "C" {
     static __rseq_offset: libc::ptrdiff_t;
     static __rseq_size: libc::c_uint;
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn thread_area(offset: isize) -> Option<NonNull<Area>> {
     let tp = thread_pointer();
     NonNull::new(tp.wrapping_offset(offset).cast())
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
 fn thread_area(_offset: isize) -> Option<NonNull<Area>> {
     None
 }
@@ -105,6 +120,20 @@ fn thread_pointer() -> *mut u8 {
     unsafe {
         core::arch::asm!(
             "mov {}, fs:0",
+            out(reg) tp,
+            options(nostack, preserves_flags, readonly, pure)
+        );
+    }
+    tp
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn thread_pointer() -> *mut u8 {
+    let tp: *mut u8;
+    // SAFETY: `tpidr_el0` is the aarch64 thread pointer.
+    unsafe {
+        core::arch::asm!(
+            "mrs {}, tpidr_el0",
             out(reg) tp,
             options(nostack, preserves_flags, readonly, pure)
         );

@@ -3,8 +3,10 @@ use core::ptr::{self, NonNull};
 use crate::abi::{Area, CPU_REG_FAILED, CPU_UNINIT};
 use crate::words::Word;
 
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+use crate::aarch64 as cs;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-use crate::x86_64;
+use crate::x86_64 as cs;
 
 /// Compare-miss or a CPU-mismatch abort. Kernel preemption restarts inside the CS.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,12 +92,15 @@ impl Thread {
         expect: usize,
         new: usize,
     ) -> Result<usize, Error> {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
         {
             // SAFETY: `self` is bound; `word` is a live AtomicUsize for `word.cpu`.
             // The CS is a Relaxed atomic RMW; rseq is atomicity vs same-CPU threads.
             match unsafe {
-                x86_64::compare_exchange(
+                cs::compare_exchange(
                     self.area(),
                     word.as_ptr().as_ptr(),
                     word.cpu().get(),
@@ -103,12 +108,15 @@ impl Thread {
                     new,
                 )
             } {
-                x86_64::Attempt::Ok(old) => Ok(old),
-                x86_64::Attempt::Miss(current) => Err(Error::Miss(current)),
-                x86_64::Attempt::Abort => Err(Error::Abort),
+                cs::Attempt::Ok(old) => Ok(old),
+                cs::Attempt::Miss(current) => Err(Error::Miss(current)),
+                cs::Attempt::Abort => Err(Error::Abort),
             }
         }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
         {
             let _ = (word, expect, new);
             Err(Error::Abort)
@@ -126,18 +134,24 @@ impl Thread {
     /// unavailable on this target.
     #[inline]
     pub fn fetch_add(&self, word: Word<'_>, count: usize) -> Result<usize, Error> {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
         {
             // SAFETY: `self` is bound; `word` is a live AtomicUsize for `word.cpu`.
             // The CS is a Relaxed atomic RMW; rseq is atomicity vs same-CPU threads.
             match unsafe {
-                x86_64::fetch_add(self.area(), word.as_ptr().as_ptr(), word.cpu().get(), count)
+                cs::fetch_add(self.area(), word.as_ptr().as_ptr(), word.cpu().get(), count)
             } {
-                x86_64::Attempt::Ok(prev) => Ok(prev),
-                x86_64::Attempt::Miss(_) | x86_64::Attempt::Abort => Err(Error::Abort),
+                cs::Attempt::Ok(prev) => Ok(prev),
+                cs::Attempt::Miss(_) | cs::Attempt::Abort => Err(Error::Abort),
             }
         }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
         {
             let _ = (word, count);
             Err(Error::Abort)
