@@ -47,13 +47,14 @@ let w = words.get(cpu)?;           // Word { ptr, cpu }
 
 t.compare_exchange(w, expect, new)?;  // miss / abort
 t.fetch_add(w, 1)?;                   // abort
+t.store_if(w, expect, new, side, v)?; // scratch then commit
 ```
 
 - `Rseq` — process registration. `Copy`. `try_new` is `#[cold]`, once.
   glibc area and CPU count. Not membarrier.
 - `Thread` — this thread's `Area`. `Copy`. `bind` is `#[cold]`. Owns
-  `compare_exchange` / `fetch_add`. Hit takes `&Thread` so it does not
-  reload `__rseq_offset` / `fs:0`.
+  `compare_exchange` / `fetch_add` / `store_if`. Hit takes `&Thread` so it
+  does not reload `__rseq_offset` / `fs:0`.
 - `Word` — `Copy`. `AtomicUsize` pointer plus `CpuId`. librseq's `(v, cpu)`.
   `Words::get` borrows the region. `from_raw` is `'static`.
 - `Words` — optional mmap of one word per possible CPU. `get` is
@@ -169,7 +170,7 @@ Standalone crate. Full RSEQ impl on `linux + x86_64` and `linux + aarch64`.
 ```text
 src/lib.rs         re-exports
 src/rseq.rs        Rseq::try_new / bind / fence / words
-src/thread.rs      Thread, CpuId, compare_exchange / fetch_add
+src/thread.rs      Thread, CpuId, compare_exchange / fetch_add / store_if
 src/words.rs       Word, Words
 src/region.rs      Region (mmap or caller span)
 src/cpus.rs        Cpus (sysfs possible)
@@ -219,13 +220,12 @@ fall-through status, or `addq` vs `xadd` without a new isolated table.
 Same safe API. `adrp`/`add` for `cs`, `mrs tpidr_el0`, aarch64 `SIG`
 (`BRK #0x45E0`). CI `cargo check --target aarch64-unknown-linux-gnu`.
 
-### v0.3.0 — more word ops
+### v0.3.0 — `store_if`
 
-```text
-store_if   // cmpeqv_trystorev_storev
-```
-
-Still one committing store each. No user closure in the CS.
+librseq `cmpeqv_trystorev_storev`. Two `Word`s: compare `word` to
+`expect`, scratch-store `side`, commit-store `word`. `side.cpu` must
+equal `word.cpu` or `Abort` (Rust, before the CS). The CS still confirms
+only `word.cpu`. Still one committing store. No user closure.
 
 ### v0.4.0 — self-registration
 

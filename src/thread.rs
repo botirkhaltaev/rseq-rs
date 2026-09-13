@@ -152,4 +152,67 @@ impl Thread {
             Err(Error::Abort)
         }
     }
+
+    /// Compare `word` to `expect`, store `side_new` into `side`, then store `new`.
+    ///
+    /// This is librseq `cmpeqv_trystorev_storev`. The store to `side` is
+    /// scratch: an abort after it restarts and may write `side` again. The
+    /// store to `word` is the commit.
+    ///
+    /// `side.cpu` must equal `word.cpu` or this returns [`Error::Abort`]
+    /// without entering the CS.
+    ///
+    /// One attempt. Kernel preemption restarts inside the CS. CPU mismatch
+    /// is [`Error::Abort`] — re-read [`Self::cpu_id`] and pick a new word.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Miss`] when the word is not `expect` (`side` is untouched).
+    /// [`Error::Abort`] when the CPUs differ, this thread is not on
+    /// `word.cpu`, or rseq is unavailable on this target.
+    #[inline]
+    pub fn store_if(
+        &self,
+        word: Word<'_>,
+        expect: usize,
+        new: usize,
+        side: Word<'_>,
+        side_new: usize,
+    ) -> Result<usize, Error> {
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        {
+            if side.cpu() != word.cpu() {
+                return Err(Error::Abort);
+            }
+            // SAFETY: `self` is bound; both words are live AtomicUsizes for
+            // `word.cpu`. The CS is a Relaxed atomic RMW; rseq is atomicity
+            // vs same-CPU threads.
+            match unsafe {
+                cs::store_if(
+                    self.area(),
+                    word.as_ptr().as_ptr(),
+                    word.cpu().get(),
+                    expect,
+                    new,
+                    side.as_ptr().as_ptr(),
+                    side_new,
+                )
+            } {
+                cs::Attempt::Ok(old) => Ok(old),
+                cs::Attempt::Miss(current) => Err(Error::Miss(current)),
+                cs::Attempt::Abort => Err(Error::Abort),
+            }
+        }
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        {
+            let _ = (word, expect, new, side, side_new);
+            Err(Error::Abort)
+        }
+    }
 }
