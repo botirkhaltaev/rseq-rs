@@ -51,7 +51,8 @@ t.store_if(w, expect, new, side, v)?; // scratch then commit
 ```
 
 - `Rseq` — process registration. `Copy`. `try_new` is `#[cold]`, once.
-  glibc area and CPU count. Not membarrier.
+  glibc area if present, else `Registration` + `SYS_rseq`. CPU count.
+  Not membarrier.
 - `Thread` — this thread's `Area`. `Copy`. `bind` is `#[cold]`. Owns
   `compare_exchange` / `fetch_add` / `store_if`. Hit takes `&Thread` so it
   does not reload `__rseq_offset` / `fs:0`.
@@ -70,8 +71,8 @@ Embedder field in a larger per-CPU struct: `unsafe Word::from_raw(ptr, cpu)`.
 Safety: `ptr` is a live aligned `AtomicUsize`, used only as this word, and
 outlives the ops. Array embedder: `unsafe Words::from_raw(base, cpus)`.
 
-`try_new` is `None` → missing glibc rseq or a zero CPU count. The fallback
-is the caller's `AtomicUsize`, not a locked twin in this crate.
+`try_new` is `None` → the kernel has no rseq, or a zero CPU count. The
+fallback is the caller's `AtomicUsize`, not a locked twin in this crate.
 
 `Rseq::fence` is optional. First call registers RSEQ membarrier; word ops
 never fence.
@@ -108,13 +109,17 @@ types. v0.1 is the word ops, not another magazine.
 - Kernel 6.12, glibc 2.34 with the RHEL 9 rseq backport.
 - `__rseq_offset` / `__rseq_size` / `__rseq_flags` live in `ld.so`.
 - glibc registers a 20-byte area (`node_id` / `mm_cid` not populated).
-- Self-register via `SYS_rseq` returns `EINVAL`. v0.1 reuses glibc's area.
+- Self-register via `SYS_rseq` returns `EINVAL` while glibc holds the area.
+- `GLIBC_TUNABLES=glibc.pthread.rseq=0` leaves `__rseq_size` 0; v0.4 then
+  self-registers.
 
 ## ABI contract (v0.1)
 
 The kernel registers **one** per-thread `struct rseq` (`rseq(2)`). glibc
-(2.35+, and this host's 2.34 RHEL backport) owns that area. A second
-`SYS_rseq` is `EINVAL`. Libraries share glibc's TLS.
+(2.35+, and this host's 2.34 RHEL backport) owns that area when it
+registers. A second `SYS_rseq` is `EINVAL`. Libraries share glibc's TLS.
+When `__rseq_size` is 0 or the symbols are missing, this crate owns a
+32-byte `Registration` TLS area and unregisters it at thread exit.
 
 User-space may write **`rseq_cs` only**. `cpu_id`, `cpu_id_start`,
 `node_id`, `mm_cid`, and feature `flags` are kernel-owned. Optimized
@@ -171,6 +176,7 @@ Standalone crate. Full RSEQ impl on `linux + x86_64` and `linux + aarch64`.
 src/lib.rs         re-exports
 src/rseq.rs        Rseq::try_new / bind / fence / words
 src/thread.rs      Thread, CpuId, compare_exchange / fetch_add / store_if
+src/registration.rs Registration (self-register TLS)
 src/words.rs       Word, Words
 src/region.rs      Region (mmap or caller span)
 src/cpus.rs        Cpus (sysfs possible)
@@ -229,10 +235,10 @@ only `word.cpu`. Still one committing store. No user closure.
 
 ### v0.4.0 — self-registration
 
-When `__rseq_size == 0` (tunable off, musl, old glibc): weak `__rseq_*`,
-per-thread 32-byte area, unregister on thread exit. `node_id` / `mm_cid`
-when the registered area is 32 bytes. Nightly only behind a cargo feature.
-`try_new` stays safe; this is still an `Unavailable` vs `Ok` split.
+Always on. `dlsym` `__rseq_offset` / `__rseq_size`. Size >= 20 uses
+glibc's area. Else `Registration` TLS, `SYS_rseq` 32-byte area,
+unregister on thread exit. `try_new` is `None` only if the kernel has no
+rseq. `node_id` / `mm_cid` accessors are later.
 
 ### v0.5.0 — cached block overlay (likely never)
 

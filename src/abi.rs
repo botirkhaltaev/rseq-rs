@@ -11,6 +11,10 @@ pub(crate) struct Area {
 
 /// Minimum glibc area (`cpu_id_start` .. `flags`).
 pub(crate) const AREA_MIN: usize = 20;
+/// Self-registered area (`AREA_MIN` plus `node_id` / `mm_cid` / pad).
+pub(crate) const AREA_OWN: usize = 32;
+/// `rseq(2)` `RSEQ_FLAG_UNREGISTER`.
+pub(crate) const FLAG_UNREGISTER: u32 = 1;
 pub(crate) const CPU_UNINIT: u32 = u32::MAX;
 /// `RSEQ_CPU_ID_REGISTRATION_FAILED` (`-2`).
 pub(crate) const CPU_REG_FAILED: u32 = u32::MAX - 1;
@@ -35,6 +39,8 @@ mod tests {
         assert_eq!(offset_of!(Area, rseq_cs), 8);
         assert_eq!(offset_of!(Area, flags), 16);
         assert_eq!(size_of::<Area>(), AREA_MIN);
+        assert_eq!(AREA_OWN, 32);
+        assert_eq!(FLAG_UNREGISTER, 1);
         #[cfg(target_arch = "x86_64")]
         assert_eq!(SIG, 0x5305_3053);
         #[cfg(target_arch = "aarch64")]
