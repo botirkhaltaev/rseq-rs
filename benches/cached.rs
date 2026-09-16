@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 //! One cached object per CPU.
 //!
 //! Upstream: tcmalloc per-CPU cache front (`docs/rseq.md`,
@@ -33,7 +35,7 @@ fn pin(cpu: u32) -> bool {
 }
 
 fn setup() -> Option<(Thread, Words)> {
-    let rseq = Rseq::try_new()?;
+    let rseq = Rseq::new()?;
     let thread = rseq.bind()?;
     let cpu = thread.cpu_id()?;
     if !pin(cpu.get()) {

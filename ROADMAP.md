@@ -4,7 +4,7 @@ Standalone Linux restartable-sequence primitives for Rust. Package
 `rseq-rs`, lib `rseq_rs`. The crate name `rseq` is taken (unrelated DSL).
 
 This is librseq in Rust: crate-owned sequences on a caller-chosen word
-plus a CPU check. Not a tcmalloc magazine.
+plus an index check. Not a tcmalloc magazine.
 
 ## Thesis
 
@@ -17,7 +17,7 @@ stores — no lock, no CAS.
 The primitive is that sequence, not an array. librseq is
 `cmpeqv_storev(v, expect, new, cpu)`: the caller owns `v`. This crate
 owns the instruction range. The public handle is `Thread` plus `Word`
-(`NonNull<AtomicUsize>` and `CpuId`). `Words` is an optional mmap of words.
+(`&AtomicUsize` and `CpuId` or `Cid`). `Words` is an optional mmap of words.
 
 The critical section itself is **not** user Rust. A `Fn` / closure /
 proc-macro around safe code cannot be a restartable sequence: the compiler
@@ -25,9 +25,9 @@ may spill, reorder, or split it, and the kernel needs an exact
 `[start_ip, start_ip + post_commit_offset)` range. The crate owns those
 sequences.
 
-Compare-miss is `Err(Miss(current))`. CPU mismatch is `Err(Abort)`.
+Compare-miss is `Err(Miss(current))`. Index mismatch is `Err(Abort)`.
 Kernel preemption restarts inside the CS. The caller retries abort after
-re-reading `cpu_id` — do not spin on the same `Word`.
+re-reading the index — do not spin on the same `Word`.
 
 Runic integration is out until v0.1 benches exist and new thread-heavy gates
 are named. `#135` was not a fair test of RSEQ: the impl never reached the
@@ -39,45 +39,51 @@ win that by design).
 Behavior lives on the owning types. No free one-liner wrappers.
 
 ```rust
-let rseq = Rseq::try_new()?;       // None: kernel / glibc
+let rseq = Rseq::new()?;           // None: kernel / glibc
 let t = rseq.bind()?;              // Thread; store in caller TLS
 let words = rseq.words()?;         // optional region
 let cpu = t.cpu_id()?;
-let w = words.get(cpu)?;           // Word { ptr, cpu }
+let w = words.get(cpu)?;           // Word { ptr, key }
 
 t.compare_exchange(w, expect, new)?;  // miss / abort
 t.fetch_add(w, 1)?;                   // abort
 t.store_if(w, expect, new, side, v)?; // scratch then commit
 ```
 
-- `Rseq` — process registration. `Copy`. `try_new` is `#[cold]`, once.
+- `Rseq` — process registration. `Copy`. `new` is `#[cold]`, once.
   glibc area if present, else `Registration` + `SYS_rseq`. CPU count.
   Not membarrier.
 - `Thread` — this thread's `Area`. `Copy`. `bind` is `#[cold]`. Owns
   `compare_exchange` / `fetch_add` / `store_if`. Hit takes `&Thread` so it
   does not reload `__rseq_offset` / `fs:0`.
-- `Word` — `Copy`. `AtomicUsize` pointer plus `CpuId`. librseq's `(v, cpu)`.
-  `Words::get` borrows the region. `from_raw` is `'static`.
-- `Words` — optional mmap of one word per possible CPU. `get` is
-  address math, not a CS. `Rseq::words` maps a new region.
+- `Word<K>` — `Copy`. `&AtomicUsize` plus `K: Index`. Defaults to
+  `CpuId`. `Words::get` borrows the region. `Word::new` is safe.
+- `Words` — optional mmap of one word per possible CPU. Slot count is
+  possible CPUs; may be cid-indexed. `get` is address math, not a CS.
+  `Rseq::words` maps a new region. `from_static` wraps a `'static` slice.
 - `CpuId` — newtype `u32`. `Thread::cpu_id() -> Option<CpuId>`.
-- `Error` — `Miss(usize)` or `Abort`.
+- `Cid` — newtype `u32`. Only from `Thread::cid() -> Option<Cid>` when
+  the kernel populates `mm_cid`.
+- `Index` — sealed marker. `CpuId` and `Cid` only.
+- `Error` — `Miss(usize)` or `Abort`. Exhaustive: the CS has two outcomes.
 
-The CS loads `area.cpu_id` and aborts if it is not `word.cpu`. Then it
-stores through `word.ptr`. A CPU-mismatch abort does not retry inside
-the crate: the caller re-reads `cpu_id` and picks a new word.
+The CS loads `area.cpu_id` or `area.mm_cid` and aborts if it is not
+`word.key`. Then it stores through the borrowed atomic. An index-mismatch abort
+does not retry inside the crate: the caller re-reads the index and picks
+a new word.
 
-Embedder field in a larger per-CPU struct: `unsafe Word::from_raw(ptr, cpu)`.
-Safety: `ptr` is a live aligned `AtomicUsize`, used only as this word, and
-outlives the ops. Array embedder: `unsafe Words::from_raw(base, cpus)`.
+Embedder field in a larger per-CPU struct: `Word::new(&self.head, cpu)`.
+Array embedder: `Words::from_static(&SLOTS)`.
 
-`try_new` is `None` → the kernel has no rseq, or a zero CPU count. The
+`new` is `None` → the kernel has no rseq, or a zero CPU count. The
 fallback is the caller's `AtomicUsize`, not a locked twin in this crate.
 
 `Rseq::fence` is optional. First call registers RSEQ membarrier; word ops
-never fence.
+never fence. `fence` targets a CPU; a cid word has no CPU. Draining a
+cid word needs a fence on every CPU (or the un-targeted command).
+`Rseq::fence_all` is a later item.
 
-Other targets: types exist; `try_new` returns `None`. Dependents compile
+Other targets: types exist; `new` returns `None`. Dependents compile
 everywhere. Word width is `usize` (librseq `intptr_t`). Linux aarch64 uses
 the same API as x86_64.
 
@@ -108,7 +114,10 @@ types. v0.1 is the word ops, not another magazine.
 
 - Kernel 6.12, glibc 2.34 with the RHEL 9 rseq backport.
 - `__rseq_offset` / `__rseq_size` / `__rseq_flags` live in `ld.so`.
-- glibc registers a 20-byte area (`node_id` / `mm_cid` not populated).
+- glibc `__rseq_size` reports 20. Every kernel registration is 32 bytes.
+  Kernel populates `node_id` / `mm_cid`.
+- `AT_RSEQ_FEATURE_SIZE` is 28 (`offsetofend(mm_cid)`). That is the
+  liveness gate, not `__rseq_size`.
 - Self-register via `SYS_rseq` returns `EINVAL` while glibc holds the area.
 - `GLIBC_TUNABLES=glibc.pthread.rseq=0` leaves `__rseq_size` 0; v0.4 then
   self-registers.
@@ -120,6 +129,8 @@ The kernel registers **one** per-thread `struct rseq` (`rseq(2)`). glibc
 registers. A second `SYS_rseq` is `EINVAL`. Libraries share glibc's TLS.
 When `__rseq_size` is 0 or the symbols are missing, this crate owns a
 32-byte `Registration` TLS area and unregisters it at thread exit.
+Every kernel registration is 32 bytes. `__rseq_size` on this glibc is
+20 (legacy report); `mm_cid` liveness is `AT_RSEQ_FEATURE_SIZE`.
 
 User-space may write **`rseq_cs` only**. `cpu_id`, `cpu_id_start`,
 `node_id`, `mm_cid`, and feature `flags` are kernel-owned. Optimized
@@ -128,8 +139,8 @@ on `cpu_id_start` is ABI-hostile and is out of this crate.
 
 `cpu_id_start` is a speculative in-range index. Side effects are legal
 only after `cpu_id` confirms it. This crate does not pre-read
-`cpu_id_start`. `Word.cpu` is the librseq confirmation: the CS compares
-`area.cpu_id == word.cpu`.
+`cpu_id_start`. `Word.key` is the librseq confirmation: the CS compares
+`area.cpu_id` or `area.mm_cid` to `word.key`.
 
 Remote drain is `membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ)`
 (Linux 5.10+): abort siblings' CS on a CPU. That is `Rseq::fence`. Word
@@ -147,22 +158,22 @@ TLS->rseq::rseq_cs = rseq_cs
 [post_commit_ip]
 ```
 
-Time-slice extension, `mm_cid` compact indexing, and V2 feature-size
-registration are later kernels. Not v0.1.
+Time-slice extension and V2 feature-size registration are later kernels.
+`mm_cid` indexing is v0.5.
 
 ## Invariants
 
 ```text
-Safe public API. unsafe only: from_raw, and the private asm.
+Safe public API. unsafe only private asm / syscalls / mmap.
 One committing store, last. Extra stores before it must be scratch.
 Static rseq_cs in __rseq_cs ("aw"), 32-byte aligned. Hit stores the pointer.
 Caller-owned Thread. Hit does not load __rseq_offset or fs:0.
-CS aborts if area.cpu_id != word.cpu. Store goes through word.ptr.
+CS aborts if the confirmed field is not word.key. Store goes through the atomic.
 No per-op fence. No rseq_cs clear after commit (kernel clears on preempt).
 RSEQ path never locks or CASes. No locked twin in this crate.
 Never GlobalAlloc (no Vec / Box / String / HashMap). mmap is the OS boundary.
 Cold paths may use OnceLock and File into a stack buffer.
-Workspace lints. unsafe_op_in_unsafe_fn deny.
+Workspace lints. missing_docs deny. unsafe_op_in_unsafe_fn deny. Clippy defaults.
 ```
 
 Crate-owned `Words` may `mmap` / `munmap`. That is the OS boundary, not
@@ -174,9 +185,11 @@ Standalone crate. Full RSEQ impl on `linux + x86_64` and `linux + aarch64`.
 
 ```text
 src/lib.rs         re-exports
-src/rseq.rs        Rseq::try_new / bind / fence / words
-src/thread.rs      Thread, CpuId, compare_exchange / fetch_add / store_if
+src/rseq.rs        Rseq::new / bind / fence / words
+src/thread.rs      Thread, CpuId, Cid, Index, compare_exchange / fetch_add / store_if
 src/registration.rs Registration (self-register TLS)
+src/fallback.rs    CS and Registration stubs
+src/attempt.rs     CS Attempt
 src/words.rs       Word, Words
 src/region.rs      Region (mmap or caller span)
 src/cpus.rs        Cpus (sysfs possible)
@@ -195,9 +208,9 @@ benches/drain.rs   tcmalloc FenceCpu + steal
 `asm!` shape: `.pushsection __rseq_cs,"aw"` + local labels (PIE-safe; no
 `global_asm!` outline). Abort signature immediately before the abort IP
 (`.long SIG` on x86_64, `.inst SIG` on aarch64). Then `lea` / `adrp`+`add`
-into `area.rseq_cs`. Load `cpu_id`; abort if not `word.cpu`.
-Compare-exchange or add through `word.ptr`. Committing store last. Kernel
-abort restarts at the signed IP. CPU mismatch returns `Error::Abort`.
+into `area.rseq_cs`. Load `cpu_id` or `mm_cid`; abort if not `word.key`.
+Compare-exchange or add through the word. Committing store last. Kernel
+abort restarts at the signed IP. Index mismatch returns `Error::Abort`.
 No `cpu_id_start` pre-read and recheck.
 
 ## Releases
@@ -206,7 +219,7 @@ No `cpu_id_start` pre-read and recheck.
 
 ```text
 Rseq / Thread / CpuId / Word / Words / Error
-Thread::compare_exchange / fetch_add; unsafe from_raw only
+Thread::compare_exchange / fetch_add; Word::new
 tests: abi (private), smoke, words, ops, stress (ignored)
 bench: counter (addv + bare Word), cached (take/put + bare Word),
        freelist (librseq list), drain (FenceCpu)
@@ -237,15 +250,16 @@ only `word.cpu`. Still one committing store. No user closure.
 
 Always on. `dlsym` `__rseq_offset` / `__rseq_size`. Size >= 20 uses
 glibc's area. Else `Registration` TLS, `SYS_rseq` 32-byte area,
-unregister on thread exit. `try_new` is `None` only if the kernel has no
+unregister on thread exit. `new` is `None` only if the kernel has no
 rseq. `node_id` / `mm_cid` accessors are later.
 
-### v0.5.0 — cached block overlay (likely never)
+### v0.5.0 — `mm_cid`
 
-tcmalloc overlays a cached block pointer on `cpu_id_start`. That is
-ABI-hostile: we do not write kernel-owned fields, and RSEQ V2 SIGSEGVs
-those writers. Not v0.1. Revisit only if a later kernel offers a
-documented user field.
+`Cid` and sealed `Index`. `Thread::cid()` when `AT_RSEQ_FEATURE_SIZE >=
+28`. `Word<K>` / word ops confirm `area.mm_cid` or `area.cpu_id` via one
+const offset. `Cid` only from `Thread::cid`. `Word::new` is safe.
+`Rseq::new`. Overlay of `cpu_id_start` stays out. `fence_all` for cid
+drain is later.
 
 ### Later — magazine
 
@@ -270,4 +284,4 @@ Runic integration before the isolated bench table exists
 
 Starts from the v0.1 bench table and new gates: threads > cores, thread
 spawn churn, RSS under thread count. Not churn/64. Not a retry of `#135`
-as written. Runic would call `Word::from_raw` on a field or own `Words`.
+as written. Runic would call `Word::new` on a field or own `Words`.

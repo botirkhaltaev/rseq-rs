@@ -1,18 +1,20 @@
-/// Kernel `struct rseq` prefix. glibc on this host registers 20 bytes; do not
-/// read `node_id` / `mm_cid` unless the registered size is 32.
-/// Packed so the type is 20 bytes — `repr(C)` would pad to 24.
-#[repr(C, packed)]
+//! Kernel `struct rseq`. Every registration is 32 bytes; `__rseq_size` is a
+//! feature report, not the mapped size.
+
+/// Full uapi `struct rseq`. `repr(C)`: `rseq_cs` at 8 gives align 8, size 32.
+#[repr(C)]
 pub(crate) struct Area {
     pub cpu_id_start: u32,
     pub cpu_id: u32,
     pub rseq_cs: u64,
     pub flags: u32,
+    pub node_id: u32,
+    pub mm_cid: u32,
+    pub _pad: u32,
 }
 
-/// Minimum glibc area (`cpu_id_start` .. `flags`).
-pub(crate) const AREA_MIN: usize = 20;
-/// Self-registered area (`AREA_MIN` plus `node_id` / `mm_cid` / pad).
-pub(crate) const AREA_OWN: usize = 32;
+/// Smallest `__rseq_size` glibc reports when it registered an area.
+pub(crate) const GLIBC_SIZE_MIN: usize = 20;
 /// `rseq(2)` `RSEQ_FLAG_UNREGISTER`.
 pub(crate) const FLAG_UNREGISTER: u32 = 1;
 pub(crate) const CPU_UNINIT: u32 = u32::MAX;
@@ -26,6 +28,11 @@ pub(crate) const SIG: u32 = 0x5305_3053;
 pub(crate) const SIG: u32 = 0xd428_bc00;
 pub(crate) const CPU_ID_OFF: usize = 4;
 pub(crate) const CS_OFF: usize = 8;
+pub(crate) const MM_CID_OFF: usize = 24;
+/// `AT_RSEQ_FEATURE_SIZE` auxv type.
+pub(crate) const AT_RSEQ_FEATURE_SIZE: libc::c_ulong = 27;
+/// `offsetofend(struct rseq, mm_cid)`. Kernel populates `mm_cid` at this size.
+pub(crate) const CID_FEATURE_SIZE: libc::c_ulong = 28;
 
 #[cfg(test)]
 mod tests {
@@ -38,8 +45,10 @@ mod tests {
         assert_eq!(offset_of!(Area, cpu_id), 4);
         assert_eq!(offset_of!(Area, rseq_cs), 8);
         assert_eq!(offset_of!(Area, flags), 16);
-        assert_eq!(size_of::<Area>(), AREA_MIN);
-        assert_eq!(AREA_OWN, 32);
+        assert_eq!(offset_of!(Area, node_id), 20);
+        assert_eq!(offset_of!(Area, mm_cid), 24);
+        assert_eq!(size_of::<Area>(), 32);
+        assert_eq!(GLIBC_SIZE_MIN, 20);
         assert_eq!(FLAG_UNREGISTER, 1);
         #[cfg(target_arch = "x86_64")]
         assert_eq!(SIG, 0x5305_3053);
@@ -47,5 +56,8 @@ mod tests {
         assert_eq!(SIG, 0xd428_bc00);
         assert_eq!(CPU_ID_OFF, 4);
         assert_eq!(CS_OFF, 8);
+        assert_eq!(MM_CID_OFF, 24);
+        assert_eq!(AT_RSEQ_FEATURE_SIZE, 27);
+        assert_eq!(CID_FEATURE_SIZE, 28);
     }
 }

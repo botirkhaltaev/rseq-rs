@@ -1,8 +1,11 @@
 //! Per-thread 32-byte `struct rseq` when glibc did not register one.
 
-use core::{cell::UnsafeCell, ptr::NonNull};
+use core::{cell::UnsafeCell, mem::size_of, ptr::NonNull};
 
-use crate::abi::{AREA_OWN, Area, CPU_REG_FAILED, CPU_UNINIT, FLAG_UNREGISTER, SIG};
+use crate::abi::{
+    AT_RSEQ_FEATURE_SIZE, Area, CID_FEATURE_SIZE, CPU_REG_FAILED, CPU_UNINIT, FLAG_UNREGISTER,
+    GLIBC_SIZE_MIN, SIG,
+};
 
 thread_local! {
     static SLOT: Registration = const { Registration::new() };
@@ -12,7 +15,6 @@ thread_local! {
 #[repr(C, align(32))]
 pub(crate) struct Registration {
     area: UnsafeCell<Area>,
-    _tail: [u32; 3],
 }
 
 impl Registration {
@@ -23,8 +25,10 @@ impl Registration {
                 cpu_id: CPU_UNINIT,
                 rseq_cs: 0,
                 flags: 0,
+                node_id: 0,
+                mm_cid: 0,
+                _pad: 0,
             }),
-            _tail: [0; 3],
         }
     }
 
@@ -41,9 +45,59 @@ impl Registration {
             return NonNull::new(ptr);
         }
         // SAFETY: `SYS_rseq` takes (rseq, len, flags, sig). `ptr` is 32-byte aligned
-        // live TLS of `AREA_OWN` bytes. No other registrant on this thread.
-        let rc = unsafe { libc::syscall(libc::SYS_rseq, ptr, AREA_OWN, 0, SIG) };
+        // live TLS of `size_of::<Area>()` bytes. No other registrant on this thread.
+        let rc = unsafe { libc::syscall(libc::SYS_rseq, ptr, size_of::<Area>(), 0, SIG) };
         if rc == 0 { NonNull::new(ptr) } else { None }
+    }
+}
+
+pub(crate) fn glibc_offset() -> Option<isize> {
+    // SAFETY: `dlsym` looks up exported glibc symbols. Null means absent.
+    let size_p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_size".as_ptr()) };
+    let offset_p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_offset".as_ptr()) };
+    if size_p.is_null() || offset_p.is_null() {
+        return None;
+    }
+    // SAFETY: glibc publishes `__rseq_size` as `unsigned int`.
+    let size = usize::try_from(unsafe { size_p.cast::<libc::c_uint>().read() }).ok()?;
+    if size < GLIBC_SIZE_MIN {
+        return None;
+    }
+    // SAFETY: glibc publishes `__rseq_offset` as `ptrdiff_t`.
+    Some(unsafe { offset_p.cast::<libc::ptrdiff_t>().read() })
+}
+
+pub(crate) fn cid_supported() -> bool {
+    // SAFETY: `getauxval` looks up an auxv entry; 0 if the type is absent.
+    unsafe { libc::getauxval(AT_RSEQ_FEATURE_SIZE) >= CID_FEATURE_SIZE }
+}
+
+pub(crate) fn glibc_area(offset: isize) -> Option<NonNull<Area>> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let tp: *mut u8;
+        // SAFETY: `fs:0` is the x86_64 thread pointer.
+        unsafe {
+            core::arch::asm!(
+                "mov {}, fs:0",
+                out(reg) tp,
+                options(nostack, preserves_flags, readonly, pure)
+            );
+        }
+        NonNull::new(tp.wrapping_offset(offset).cast())
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let tp: *mut u8;
+        // SAFETY: `tpidr_el0` is the aarch64 thread pointer.
+        unsafe {
+            core::arch::asm!(
+                "mrs {}, tpidr_el0",
+                out(reg) tp,
+                options(nostack, preserves_flags, readonly, pure)
+            );
+        }
+        NonNull::new(tp.wrapping_offset(offset).cast())
     }
 }
 
@@ -53,7 +107,7 @@ impl Drop for Registration {
         // SAFETY: TLS dtor runs before the block is freed. Ignore errors:
         // never-registered and already-unregistered both fail the syscall.
         unsafe {
-            libc::syscall(libc::SYS_rseq, ptr, AREA_OWN, FLAG_UNREGISTER, SIG);
+            libc::syscall(libc::SYS_rseq, ptr, size_of::<Area>(), FLAG_UNREGISTER, SIG);
         }
     }
 }
@@ -61,12 +115,11 @@ impl Drop for Registration {
 #[cfg(test)]
 mod tests {
     use super::Registration;
-    use crate::abi::AREA_OWN;
     use core::mem::{align_of, size_of};
 
     #[test]
     fn own_abi() {
-        assert_eq!(size_of::<Registration>(), AREA_OWN);
-        assert_eq!(align_of::<Registration>(), AREA_OWN);
+        assert_eq!(size_of::<Registration>(), 32);
+        assert_eq!(align_of::<Registration>(), 32);
     }
 }

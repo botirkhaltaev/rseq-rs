@@ -2,7 +2,6 @@
 //!
 //! Run with `GLIBC_TUNABLES=glibc.pthread.rseq=0`.
 
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use rseq_rs::{Error, Rseq, Word};
@@ -17,7 +16,7 @@ fn self_register_ops() {
         eprintln!("skip: set GLIBC_TUNABLES=glibc.pthread.rseq=0");
         return;
     }
-    let rseq = Rseq::try_new().expect("SYS_rseq when glibc rseq is off");
+    let rseq = Rseq::new().expect("SYS_rseq when glibc rseq is off");
     let thread = rseq.bind().expect("bind");
     let again = rseq.bind().expect("bind twice");
     assert_eq!(thread.cpu_id(), again.cpu_id());
@@ -28,7 +27,7 @@ fn self_register_ops() {
     assert_eq!(thread.fetch_add(w, 1), Ok(7));
     let side = AtomicUsize::new(0);
     // SAFETY: `side` is a live aligned word; this test owns it for the ops.
-    let s = unsafe { Word::from_raw(NonNull::from(&side), cpu) };
+    let s = Word::new(&side, cpu);
     assert_eq!(thread.store_if(w, 8, 9, s, 3), Ok(8));
     assert_eq!(side.load(Ordering::Relaxed), 3);
 }
@@ -39,7 +38,7 @@ fn self_register_spawned_thread() {
         eprintln!("skip: set GLIBC_TUNABLES=glibc.pthread.rseq=0");
         return;
     }
-    let rseq = Rseq::try_new().expect("SYS_rseq when glibc rseq is off");
+    let rseq = Rseq::new().expect("SYS_rseq when glibc rseq is off");
     let join = std::thread::spawn(move || {
         let thread = rseq.bind().expect("child bind");
         let cpu = thread.cpu_id().expect("child cpu");

@@ -43,7 +43,7 @@ impl Region {
         Self::Raw(base)
     }
 
-    const fn base(&self) -> NonNull<u8> {
+    pub(crate) const fn base(&self) -> NonNull<u8> {
         match self {
             Self::Mapped { base, .. } | Self::Raw(base) => *base,
         }
