@@ -62,6 +62,6 @@ pub(crate) use fallback as registration;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use x86_64 as cs;
 
-pub use rseq::Rseq;
-pub use thread::{Cid, CpuId, Error, Index, Thread};
+pub use rseq::{Available, Rseq};
+pub use thread::{Cid, CpuId, Error, Index, NodeId, Thread};
 pub use words::{Word, Words};

@@ -7,20 +7,27 @@ sequences on a caller-chosen word. Not a runic hit path, not a magazine.
 ## Registration
 
 ```rust
-use rseq_rs::Rseq;
+use rseq_rs::{Available, Rseq};
 
+assert!(Rseq::available(Available::Kernel));
 let rseq = Rseq::new()?;
 let t = rseq.bind()?;
 let cpu = t.cpu_id()?;
 assert!(cpu.get() < rseq.cpus());
+assert_eq!(t.cpu(), cpu);
+let _ = t.cpu_id_start();
+let _ = t.node_id();
+let _ = t.slice_ctrl();
 let _ = rseq.fence(cpu);
+let _ = rseq.fence_all();
+t.prepare_unload();
 ```
 
 `new` / `bind` are `#[cold]`. Store `Thread` in caller TLS. `None` means
 the kernel has no rseq — use `AtomicUsize`, not a hidden lock here. glibc's
 area is used when present; otherwise the crate registers a 32-byte TLS
 area and unregisters it at thread exit. `fence` is optional and registers
-membarrier itself. It targets a CPU; a cid word has no CPU.
+membarrier itself. It targets a CPU; drain a cid word with `fence_all`.
 
 ## Words region
 

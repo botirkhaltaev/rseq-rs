@@ -103,6 +103,24 @@ impl private::Sealed for Cid {
 
 impl Index for Cid {}
 
+/// NUMA node id from `area.node_id`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct NodeId(u32);
+
+impl NodeId {
+    /// Wrap a kernel node id.
+    #[must_use]
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// The numeric node id.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
 /// This thread's registered `struct rseq`. `Copy`. `NonNull` so it is not `Send`.
 ///
 /// A self-registered [`Thread`] is valid until its thread exits. Call
@@ -111,22 +129,72 @@ impl Index for Cid {}
 #[derive(Clone, Copy, Debug)]
 pub struct Thread {
     area: NonNull<Area>,
+    node: bool,
     cid: bool,
+    slice: bool,
 }
 
 impl Thread {
-    pub(crate) const fn new(area: NonNull<Area>, cid: bool) -> Self {
-        Self { area, cid }
+    pub(crate) const fn new(area: NonNull<Area>, node: bool, cid: bool, slice: bool) -> Self {
+        Self {
+            area,
+            node,
+            cid,
+            slice,
+        }
     }
 
     /// Kernel `cpu_id`. `None` if unregistered or a sentinel.
+    ///
+    /// librseq `rseq_current_cpu_raw`.
     #[must_use]
     pub fn cpu_id(&self) -> Option<CpuId> {
         // SAFETY: `area` is a registered rseq TLS; the kernel writes `cpu_id`.
         CpuId::new(unsafe { ptr::addr_of!((*self.area.as_ptr()).cpu_id).read_volatile() })
     }
 
+    /// Speculative `cpu_id_start`. Read only. Side effects still require
+    /// [`Self::cpu_id`] or [`Self::cid`] to confirm the index. The CS never
+    /// uses this field as the key.
+    ///
+    /// librseq `rseq_cpu_start`.
+    #[must_use]
+    pub fn cpu_id_start(&self) -> Option<CpuId> {
+        // SAFETY: `area` is a registered rseq TLS; the kernel writes `cpu_id_start`.
+        CpuId::new(unsafe { ptr::addr_of!((*self.area.as_ptr()).cpu_id_start).read_volatile() })
+    }
+
+    /// Current CPU: [`Self::cpu_id`], then `sched_getcpu`.
+    ///
+    /// librseq `rseq_current_cpu`.
+    #[must_use]
+    pub fn cpu(&self) -> CpuId {
+        self.cpu_id().unwrap_or_else(fallback_cpu)
+    }
+
+    /// Kernel `node_id`. `None` if this kernel does not populate it.
+    ///
+    /// librseq `rseq_current_node_id` / `rseq_node_id_available`.
+    #[must_use]
+    pub fn node_id(&self) -> Option<NodeId> {
+        if !self.node {
+            return None;
+        }
+        // SAFETY: `area` is 32 bytes; `getauxval` said `node_id` is live.
+        Some(NodeId::new(unsafe {
+            ptr::addr_of!((*self.area.as_ptr()).node_id).read_volatile()
+        }))
+    }
+
+    /// Current NUMA node: [`Self::node_id`], then `getcpu`.
+    #[must_use]
+    pub fn node(&self) -> NodeId {
+        self.node_id().unwrap_or_else(fallback_node)
+    }
+
     /// Kernel `mm_cid`. `None` if this kernel does not populate it.
+    ///
+    /// librseq `rseq_current_mm_cid` / `rseq_mm_cid_available`.
     #[must_use]
     pub fn cid(&self) -> Option<Cid> {
         if !self.cid {
@@ -136,6 +204,28 @@ impl Thread {
         Some(Cid::new(unsafe {
             ptr::addr_of!((*self.area.as_ptr()).mm_cid).read_volatile()
         }))
+    }
+
+    /// Kernel `slice_ctrl`. `None` until auxv covers the field.
+    ///
+    /// librseq `rseq_slice_ctrl_available`.
+    #[must_use]
+    pub fn slice_ctrl(&self) -> Option<u32> {
+        if !self.slice {
+            return None;
+        }
+        // SAFETY: `area` is 32 bytes; `getauxval` said `slice_ctrl` is live.
+        Some(unsafe { ptr::addr_of!((*self.area.as_ptr()).slice_ctrl).read_volatile() })
+    }
+
+    /// Clear `rseq_cs` before reclaiming CS descriptors or JIT code.
+    ///
+    /// librseq `rseq_prepare_unload` / `rseq_clear_rseq_cs`.
+    pub fn prepare_unload(self) {
+        // SAFETY: user-space may write `rseq_cs` only; this thread owns the area.
+        unsafe {
+            ptr::addr_of_mut!((*self.area.as_ptr()).rseq_cs).write_volatile(0);
+        }
     }
 
     /// Compare `word` to `expect` and store `new`.
@@ -293,5 +383,33 @@ impl Thread {
                 cs::store_if::<MM_CID_OFF>(area, ptr, id, expect, new, side_ptr, side_new)
             }
         }
+    }
+}
+
+fn fallback_cpu() -> CpuId {
+    // SAFETY: `sched_getcpu` has no memory operands.
+    let n = unsafe { libc::sched_getcpu() };
+    u32::try_from(n)
+        .ok()
+        .and_then(CpuId::new)
+        .unwrap_or(CpuId(0))
+}
+
+fn fallback_node() -> NodeId {
+    let mut cpu = 0u32;
+    let mut node = 0u32;
+    // SAFETY: `getcpu` writes the two out-params; third arg is unused.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_getcpu,
+            ptr::from_mut(&mut cpu),
+            ptr::from_mut(&mut node),
+            ptr::null::<u8>(),
+        )
+    };
+    if rc == 0 {
+        NodeId::new(node)
+    } else {
+        NodeId::new(0)
     }
 }
