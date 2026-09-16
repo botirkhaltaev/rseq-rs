@@ -1,8 +1,9 @@
 //! Safe Linux restartable-sequence primitives.
 //!
-//! [`Rseq`] registration and [`Thread`] word ops. Keep [`Words`] alive across
-//! [`Words::get`]; on [`Error::Abort`] re-read [`Thread::cpu_id`] or
-//! [`Thread::cid`] and pick a new word — do not retry the same [`Word`].
+//! [`Rseq`] registration and [`Thread`] word ops. Idiomatic port of
+//! librseq `rseq/rseq.h`. Keep [`Words`] alive across [`Words::get`]; on
+//! [`Error::Abort`] re-read [`Thread::cpu_id`] or [`Thread::cid`] and pick
+//! a new word — do not retry the same [`Word`].
 //!
 //! ```
 //! # fn try_it() -> Option<()> {
@@ -62,6 +63,6 @@ pub(crate) use fallback as registration;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use x86_64 as cs;
 
-pub use rseq::Rseq;
-pub use thread::{Cid, CpuId, Error, Index, Thread};
+pub use rseq::{Available, Rseq};
+pub use thread::{COPY_MAX, Cid, CpuId, Error, Index, NodeId, Thread};
 pub use words::{Word, Words};

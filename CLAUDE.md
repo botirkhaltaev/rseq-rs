@@ -3,10 +3,10 @@
 Scope: this repository.
 
 - Safe public API. `unsafe` only private asm / syscalls / mmap.
-- No free helpers. Behavior on `Rseq` / `Thread` / `Word` / `Words` / `Cpus` / `Region` / `Membarrier` / `Registration` / `Cid`.
+- No free helpers. Behavior on `Rseq` / `Thread` / `Word` / `Words` / `Cpus` / `Region` / `Membarrier` / `Registration` / `Cid` / `NodeId` / `Available`.
 - Primitive is `Thread` + `Word`. `Words` is an optional mmap. No ops on `Words`.
 - One `struct rseq` per thread: glibc's if registered, else the crate's `Registration` TLS, unregistered at thread exit. User-space writes `rseq_cs` only.
-- `Word.key` confirms `area.cpu_id` or `area.mm_cid`. Do not pre-read or overlay `cpu_id_start`.
+- `Word.key` confirms `area.cpu_id` or `area.mm_cid`. `Thread::cpu_id_start` is a read. Do not overlay `cpu_id_start` or use it as the CS key.
 - One committing store, last. CS aborts if the field is not `word.key`.
 - CS on Linux x86_64 and aarch64. Hit takes `&Thread`. Do not reload `__rseq_offset` / `fs:0` / `tpidr_el0` per op.
 - No lock or CAS on the RSEQ hit. No locked twin.

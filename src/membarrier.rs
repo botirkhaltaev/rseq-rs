@@ -44,4 +44,20 @@ impl Membarrier {
             ) == 0
         }
     }
+
+    /// Abort siblings' CS on every CPU.
+    pub(crate) fn fence_all() -> bool {
+        if !Self::ready() {
+            return false;
+        }
+        // SAFETY: `SYS_membarrier` takes (cmd, flags, cpuid). No memory operands.
+        unsafe {
+            libc::syscall(
+                libc::SYS_membarrier,
+                libc::MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ,
+                0,
+                0,
+            ) == 0
+        }
+    }
 }

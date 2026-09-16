@@ -1,5 +1,13 @@
 //! CS outcome shared by the arch modules and the fallback stub.
 
+/// Scratch memcpy operands for [`crate::cs::store_if_copy`].
+#[derive(Clone, Copy)]
+pub(crate) struct Memcpy {
+    pub dst: *mut u8,
+    pub src: *const u8,
+    pub len: usize,
+}
+
 pub(crate) enum Attempt {
     Ok(usize),
     Miss(usize),

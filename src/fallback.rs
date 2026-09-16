@@ -3,7 +3,7 @@
 use core::{ptr::NonNull, sync::atomic::AtomicUsize};
 
 use crate::abi::Area;
-use crate::attempt::Attempt;
+use crate::attempt::{Attempt, Memcpy};
 
 /// # Safety
 /// Unused: this target has no CS.
@@ -30,7 +30,7 @@ pub(crate) unsafe fn fetch_add<const ID_OFF: usize>(
 
 /// # Safety
 /// Unused: this target has no CS.
-pub(crate) unsafe fn store_if<const ID_OFF: usize>(
+pub(crate) unsafe fn store_if<const ID_OFF: usize, const RELEASE: bool>(
     _area: NonNull<Area>,
     _word: *mut AtomicUsize,
     _id: u32,
@@ -39,6 +39,60 @@ pub(crate) unsafe fn store_if<const ID_OFF: usize>(
     _side: *mut AtomicUsize,
     _side_new: usize,
 ) -> Attempt {
+    let _ = RELEASE;
+    Attempt::Abort
+}
+
+/// # Safety
+/// Unused: this target has no CS.
+pub(crate) unsafe fn compare_exchange_if<const ID_OFF: usize>(
+    _area: NonNull<Area>,
+    _word: *mut AtomicUsize,
+    _id: u32,
+    _expect: usize,
+    _new: usize,
+    _other: *mut AtomicUsize,
+    _other_expect: usize,
+) -> Attempt {
+    Attempt::Abort
+}
+
+/// # Safety
+/// Unused: this target has no CS.
+pub(crate) unsafe fn load_if_ne<const ID_OFF: usize>(
+    _area: NonNull<Area>,
+    _word: *mut AtomicUsize,
+    _id: u32,
+    _expect_not: usize,
+    _offset: isize,
+    _out: *mut AtomicUsize,
+) -> Attempt {
+    Attempt::Abort
+}
+
+/// # Safety
+/// Unused: this target has no CS.
+pub(crate) unsafe fn fetch_add_at<const ID_OFF: usize>(
+    _area: NonNull<Area>,
+    _ptr: *mut AtomicUsize,
+    _id: u32,
+    _offset: isize,
+    _count: usize,
+) -> Attempt {
+    Attempt::Abort
+}
+
+/// # Safety
+/// Unused: this target has no CS.
+pub(crate) unsafe fn store_if_copy<const ID_OFF: usize, const RELEASE: bool>(
+    _area: NonNull<Area>,
+    _word: *mut AtomicUsize,
+    _id: u32,
+    _expect: usize,
+    _new: usize,
+    _copy: Memcpy,
+) -> Attempt {
+    let _ = RELEASE;
     Attempt::Abort
 }
 
@@ -54,7 +108,23 @@ pub(crate) fn glibc_offset() -> Option<isize> {
     None
 }
 
+pub(crate) fn node_supported() -> bool {
+    false
+}
+
 pub(crate) fn cid_supported() -> bool {
+    false
+}
+
+pub(crate) fn slice_supported() -> bool {
+    false
+}
+
+pub(crate) fn kernel_available() -> bool {
+    false
+}
+
+pub(crate) fn libc_available() -> bool {
     false
 }
 

@@ -3,7 +3,7 @@
 use core::{ptr::NonNull, sync::atomic::AtomicUsize};
 
 use crate::abi::{Area, CS_OFF, SIG};
-use crate::attempt::Attempt;
+use crate::attempt::{Attempt, Memcpy};
 
 /// # Safety
 /// `area` is this thread's rseq TLS and `word` is a live `AtomicUsize`.
@@ -132,7 +132,7 @@ pub(crate) unsafe fn fetch_add<const ID_OFF: usize>(
 /// # Safety
 /// `area` is this thread's rseq TLS; `word` and `side` are live `AtomicUsize`s.
 #[inline]
-pub(crate) unsafe fn store_if<const ID_OFF: usize>(
+pub(crate) unsafe fn store_if<const ID_OFF: usize, const RELEASE: bool>(
     area: NonNull<Area>,
     word: *mut AtomicUsize,
     id: u32,
@@ -141,6 +141,7 @@ pub(crate) unsafe fn store_if<const ID_OFF: usize>(
     side: *mut AtomicUsize,
     side_new: usize,
 ) -> Attempt {
+    let _ = RELEASE;
     let current: usize;
     let status: u64;
     // SAFETY: `area` is this thread's rseq TLS; both words are live usizes.
@@ -189,6 +190,300 @@ pub(crate) unsafe fn store_if<const ID_OFF: usize>(
             side_new = in(reg) side_new,
             got = out(reg) _,
             tmp = out(reg) _,
+            current = out(reg) current,
+            status = out(reg) status,
+            sig = const SIG,
+            id_off = const ID_OFF,
+            cs_off = const CS_OFF,
+            options(nostack),
+        );
+    }
+    Attempt::from_status(status, current)
+}
+
+/// # Safety
+/// `area` is this thread's rseq TLS; `word` and `other` are live `AtomicUsize`s.
+#[inline]
+pub(crate) unsafe fn compare_exchange_if<const ID_OFF: usize>(
+    area: NonNull<Area>,
+    word: *mut AtomicUsize,
+    id: u32,
+    expect: usize,
+    new: usize,
+    other: *mut AtomicUsize,
+    other_expect: usize,
+) -> Attempt {
+    let current: usize;
+    let status: u64;
+    // SAFETY: `area` is this thread's rseq TLS; both words are live usizes.
+    unsafe {
+        core::arch::asm!(
+            ".pushsection __rseq_cs, \"aw\"",
+            ".balign 32",
+            "59:",
+            ".long 0",
+            ".long 0",
+            ".quad 52f",
+            ".quad (56f - 52f)",
+            ".quad 57f",
+            ".popsection",
+            "jmp 57f",
+            ".long {sig}",
+            "57:",
+            "lea {tmp}, [rip + 59b]",
+            "mov qword ptr [{rseq} + {cs_off}], {tmp}",
+            "52:",
+            "mov {got:e}, dword ptr [{rseq} + {id_off}]",
+            "cmp {got:e}, {id:e}",
+            "jne 55f",
+            "mov {current}, qword ptr [{word}]",
+            "cmp {current}, {expect}",
+            "jne 54f",
+            "mov {other_val}, qword ptr [{other}]",
+            "cmp {other_val}, {other_expect}",
+            "jne 53f",
+            "mov qword ptr [{word}], {new}",
+            "56:",
+            "xor {status:e}, {status:e}",
+            "jmp 50f",
+            "53:",
+            "mov {current}, {other_val}",
+            "54:",
+            "mov {status:e}, 1",
+            "jmp 50f",
+            "55:",
+            "xor {current:e}, {current:e}",
+            "mov {status:e}, 2",
+            "50:",
+            rseq = in(reg) area.as_ptr(),
+            word = in(reg) word,
+            id = in(reg) id,
+            expect = in(reg) expect,
+            new = in(reg) new,
+            other = in(reg) other,
+            other_expect = in(reg) other_expect,
+            got = out(reg) _,
+            tmp = out(reg) _,
+            other_val = out(reg) _,
+            current = out(reg) current,
+            status = out(reg) status,
+            sig = const SIG,
+            id_off = const ID_OFF,
+            cs_off = const CS_OFF,
+            options(nostack),
+        );
+    }
+    Attempt::from_status(status, current)
+}
+
+/// # Safety
+/// `area` is this thread's rseq TLS; `word` is live; `*word + offset` is a live word pointer.
+#[inline]
+pub(crate) unsafe fn load_if_ne<const ID_OFF: usize>(
+    area: NonNull<Area>,
+    word: *mut AtomicUsize,
+    id: u32,
+    expect_not: usize,
+    offset: isize,
+    out: *mut AtomicUsize,
+) -> Attempt {
+    let current: usize;
+    let status: u64;
+    // SAFETY: `area` is this thread's rseq TLS; `word`/`out` are live; chase is caller-valid.
+    unsafe {
+        core::arch::asm!(
+            ".pushsection __rseq_cs, \"aw\"",
+            ".balign 32",
+            "49:",
+            ".long 0",
+            ".long 0",
+            ".quad 42f",
+            ".quad (46f - 42f)",
+            ".quad 47f",
+            ".popsection",
+            "jmp 47f",
+            ".long {sig}",
+            "47:",
+            "lea {tmp}, [rip + 49b]",
+            "mov qword ptr [{rseq} + {cs_off}], {tmp}",
+            "42:",
+            "mov {got:e}, dword ptr [{rseq} + {id_off}]",
+            "cmp {got:e}, {id:e}",
+            "jne 45f",
+            "mov {current}, qword ptr [{word}]",
+            "cmp {current}, {expect_not}",
+            "je 44f",
+            "mov qword ptr [{out}], {current}",
+            "mov {chase}, {current}",
+            "add {chase}, {offset}",
+            "mov {chase}, qword ptr [{chase}]",
+            "mov qword ptr [{word}], {chase}",
+            "46:",
+            "xor {status:e}, {status:e}",
+            "jmp 40f",
+            "44:",
+            "mov {status:e}, 1",
+            "jmp 40f",
+            "45:",
+            "xor {current:e}, {current:e}",
+            "mov {status:e}, 2",
+            "40:",
+            rseq = in(reg) area.as_ptr(),
+            word = in(reg) word,
+            id = in(reg) id,
+            expect_not = in(reg) expect_not,
+            offset = in(reg) offset,
+            out = in(reg) out,
+            got = out(reg) _,
+            tmp = out(reg) _,
+            chase = out(reg) _,
+            current = out(reg) current,
+            status = out(reg) status,
+            sig = const SIG,
+            id_off = const ID_OFF,
+            cs_off = const CS_OFF,
+            options(nostack),
+        );
+    }
+    Attempt::from_status(status, current)
+}
+
+/// # Safety
+/// `area` is this thread's rseq TLS; `ptr` is live; `*ptr + offset` is a live pointer to a word.
+#[inline]
+pub(crate) unsafe fn fetch_add_at<const ID_OFF: usize>(
+    area: NonNull<Area>,
+    ptr: *mut AtomicUsize,
+    id: u32,
+    offset: isize,
+    count: usize,
+) -> Attempt {
+    let prev: usize;
+    let status: u64;
+    // SAFETY: `area` is this thread's rseq TLS; the chase is caller-valid.
+    // `xadd` through the chased pointer is the committing RMW.
+    unsafe {
+        core::arch::asm!(
+            ".pushsection __rseq_cs, \"aw\"",
+            ".balign 32",
+            "69:",
+            ".long 0",
+            ".long 0",
+            ".quad 62f",
+            ".quad (66f - 62f)",
+            ".quad 67f",
+            ".popsection",
+            "jmp 67f",
+            ".long {sig}",
+            "67:",
+            "lea {tmp}, [rip + 69b]",
+            "mov qword ptr [{rseq} + {cs_off}], {tmp}",
+            "62:",
+            "mov {got:e}, dword ptr [{rseq} + {id_off}]",
+            "cmp {got:e}, {id:e}",
+            "jne 65f",
+            "mov {base}, qword ptr [{ptr}]",
+            "add {base}, {offset}",
+            "mov {slot}, qword ptr [{base}]",
+            "mov {prev}, {count}",
+            "xadd qword ptr [{slot}], {prev}",
+            "66:",
+            "xor {status:e}, {status:e}",
+            "jmp 60f",
+            "65:",
+            "xor {prev:e}, {prev:e}",
+            "mov {status:e}, 2",
+            "60:",
+            rseq = in(reg) area.as_ptr(),
+            ptr = in(reg) ptr,
+            id = in(reg) id,
+            offset = in(reg) offset,
+            count = in(reg) count,
+            got = out(reg) _,
+            tmp = out(reg) _,
+            base = out(reg) _,
+            slot = out(reg) _,
+            prev = out(reg) prev,
+            status = out(reg) status,
+            sig = const SIG,
+            id_off = const ID_OFF,
+            cs_off = const CS_OFF,
+            options(nostack),
+        );
+    }
+    Attempt::from_status(status, prev)
+}
+
+/// # Safety
+/// `area` is this thread's rseq TLS; `word` is live; `dst`/`src` are `len` live bytes.
+#[inline]
+pub(crate) unsafe fn store_if_copy<const ID_OFF: usize, const RELEASE: bool>(
+    area: NonNull<Area>,
+    word: *mut AtomicUsize,
+    id: u32,
+    expect: usize,
+    new: usize,
+    copy: Memcpy,
+) -> Attempt {
+    let _ = RELEASE;
+    let current: usize;
+    let status: u64;
+    // SAFETY: `area` is this thread's rseq TLS; memcpy is scratch; store to `word` commits.
+    unsafe {
+        core::arch::asm!(
+            ".pushsection __rseq_cs, \"aw\"",
+            ".balign 32",
+            "29:",
+            ".long 0",
+            ".long 0",
+            ".quad 22f",
+            ".quad (26f - 22f)",
+            ".quad 27f",
+            ".popsection",
+            "jmp 27f",
+            ".long {sig}",
+            "27:",
+            "lea {tmp}, [rip + 29b]",
+            "mov qword ptr [{rseq} + {cs_off}], {tmp}",
+            "22:",
+            "mov {got:e}, dword ptr [{rseq} + {id_off}]",
+            "cmp {got:e}, {id:e}",
+            "jne 25f",
+            "mov {current}, qword ptr [{word}]",
+            "cmp {current}, {expect}",
+            "jne 24f",
+            "test {len}, {len}",
+            "jz 23f",
+            "21:",
+            "mov {byte:l}, byte ptr [{src}]",
+            "mov byte ptr [{dst}], {byte:l}",
+            "inc {src}",
+            "inc {dst}",
+            "dec {len}",
+            "jnz 21b",
+            "23:",
+            "mov qword ptr [{word}], {new}",
+            "26:",
+            "xor {status:e}, {status:e}",
+            "jmp 20f",
+            "24:",
+            "mov {status:e}, 1",
+            "jmp 20f",
+            "25:",
+            "xor {current:e}, {current:e}",
+            "mov {status:e}, 2",
+            "20:",
+            rseq = in(reg) area.as_ptr(),
+            word = in(reg) word,
+            id = in(reg) id,
+            expect = in(reg) expect,
+            new = in(reg) new,
+            dst = inout(reg) copy.dst => _,
+            src = inout(reg) copy.src => _,
+            len = inout(reg) copy.len => _,
+            got = out(reg) _,
+            tmp = out(reg) _,
+            byte = out(reg) _,
             current = out(reg) current,
             status = out(reg) status,
             sig = const SIG,
