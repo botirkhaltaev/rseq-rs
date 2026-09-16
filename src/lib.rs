@@ -29,6 +29,11 @@ mod abi;
 mod cpus;
 mod membarrier;
 mod region;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod registration;
 mod rseq;
 mod thread;
 mod words;

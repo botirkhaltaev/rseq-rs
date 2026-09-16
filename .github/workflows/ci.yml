@@ -2,56 +2,58 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  verify:
-    name: Verify (${{ matrix.target }})
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-09-08
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test
+      - run: cargo test -- --ignored --test-threads=1
+      - name: Test (self-registered)
+        env:
+          GLIBC_TUNABLES: glibc.pthread.rseq=0
+        run: cargo test
+      - name: Test (self-registered, ignored)
+        env:
+          GLIBC_TUNABLES: glibc.pthread.rseq=0
+        run: cargo test -- --ignored --test-threads=1
+
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            native: true
-          - target: aarch64-unknown-linux-gnu
-            native: false
-
+        target:
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-09-08
           targets: ${{ matrix.target }}
-          components: rustfmt, clippy
-
-      - name: Cache Rust builds
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        if: matrix.native
-        run: cargo fmt --all -- --check
-
-      - name: Check
-        run: cargo check --target ${{ matrix.target }}
-
-      - name: Test
-        if: matrix.native
-        run: cargo test
-
-      - name: Abort stress
-        if: matrix.native
-        run: cargo test -- --ignored --test-threads=1
-
-      - name: Lint
-        run: cargo clippy --target ${{ matrix.target }} --all-features ${{ matrix.native && '--all-targets' || '' }} -- -D warnings
-
-      - name: Build benchmarks
-        if: matrix.native
-        run: cargo bench --no-run
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --target ${{ matrix.target }} --all-features -- -D warnings

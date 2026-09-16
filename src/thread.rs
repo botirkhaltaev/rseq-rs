@@ -41,7 +41,8 @@ impl CpuId {
 
 /// This thread's registered `struct rseq`. `Copy`. `*mut` so it is not `Send`.
 ///
-/// Call [`crate::Rseq::bind`] again in a child after `fork`. The process
+/// A self-registered [`Thread`] is valid until its thread exits. Call
+/// [`crate::Rseq::bind`] again in a child after `fork`. The process
 /// registration stays valid; this pointer does not.
 #[derive(Clone, Copy, Debug)]
 pub struct Thread {

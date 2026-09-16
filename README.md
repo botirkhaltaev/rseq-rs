@@ -17,8 +17,10 @@ let _ = rseq.fence(cpu);
 ```
 
 `try_new` / `bind` are `#[cold]`. Store `Thread` in caller TLS. `None` means
-the kernel or glibc rseq is unavailable — use `AtomicUsize`, not a hidden
-lock here. `fence` is optional and registers membarrier itself.
+the kernel has no rseq — use `AtomicUsize`, not a hidden lock here. glibc's
+area is used when present; otherwise the crate registers a 32-byte TLS
+area and unregisters it at thread exit. `fence` is optional and registers
+membarrier itself.
 
 ## Words region
 

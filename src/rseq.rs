@@ -9,18 +9,31 @@ use crate::{
     words::Words,
 };
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use crate::registration::Registration;
+
 static STATE: OnceLock<Option<Rseq>> = OnceLock::new();
+
+/// Who registered this process's per-thread `struct rseq`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Mode {
+    Glibc { offset: isize },
+    SelfRegistered,
+}
 
 /// Process-wide rseq registration. `Copy`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rseq {
-    offset: isize,
+    mode: Mode,
     cpus: Cpus,
 }
 
 impl Rseq {
-    /// glibc-registered area and CPU count.
-    /// `None` if rseq is unavailable. `#[cold]`; call once.
+    /// glibc-registered area, or the crate's own area via `SYS_rseq`.
+    /// `None` if the kernel has no rseq. `#[cold]`; call once.
     #[cold]
     #[must_use]
     pub fn try_new() -> Option<Self> {
@@ -72,27 +85,68 @@ impl Rseq {
             any(target_arch = "x86_64", target_arch = "aarch64")
         ))]
         {
-            // SAFETY: glibc publishes `__rseq_size` (0 if rseq is off).
-            let size = usize::try_from(unsafe { __rseq_size }).ok()?;
-            if size < AREA_MIN {
-                return None;
-            }
-            // SAFETY: glibc publishes `__rseq_offset` for every thread.
-            let offset = unsafe { __rseq_offset };
+            let mode = if let Some(offset) = Self::glibc_offset() {
+                Mode::Glibc { offset }
+            } else {
+                Registration::bind()?;
+                Mode::SelfRegistered
+            };
             Some(Self {
-                offset,
+                mode,
                 cpus: Cpus::possible()?,
             })
         }
     }
 
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    fn glibc_offset() -> Option<isize> {
+        // SAFETY: `dlsym` looks up exported glibc symbols. Null means absent.
+        let size_p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_size".as_ptr()) };
+        let offset_p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_offset".as_ptr()) };
+        if size_p.is_null() || offset_p.is_null() {
+            return None;
+        }
+        // SAFETY: glibc publishes `__rseq_size` as `unsigned int`.
+        let size = usize::try_from(unsafe { size_p.cast::<libc::c_uint>().read() }).ok()?;
+        if size < AREA_MIN {
+            return None;
+        }
+        // SAFETY: glibc publishes `__rseq_offset` as `ptrdiff_t`.
+        Some(unsafe { offset_p.cast::<libc::ptrdiff_t>().read() })
+    }
+
     fn area(self) -> Option<NonNull<Area>> {
+        match self.mode {
+            Mode::Glibc { offset } => Self::glibc_area(offset),
+            Mode::SelfRegistered => {
+                #[cfg(all(
+                    target_os = "linux",
+                    any(target_arch = "x86_64", target_arch = "aarch64")
+                ))]
+                {
+                    Registration::bind()
+                }
+                #[cfg(not(all(
+                    target_os = "linux",
+                    any(target_arch = "x86_64", target_arch = "aarch64")
+                )))]
+                {
+                    None
+                }
+            }
+        }
+    }
+
+    fn glibc_area(offset: isize) -> Option<NonNull<Area>> {
         #[cfg(not(all(
             target_os = "linux",
             any(target_arch = "x86_64", target_arch = "aarch64")
         )))]
         {
-            let _ = self;
+            let _ = offset;
             None
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -106,7 +160,7 @@ impl Rseq {
                     options(nostack, preserves_flags, readonly, pure)
                 );
             }
-            NonNull::new(tp.wrapping_offset(self.offset).cast())
+            NonNull::new(tp.wrapping_offset(offset).cast())
         }
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         {
@@ -119,16 +173,7 @@ impl Rseq {
                     options(nostack, preserves_flags, readonly, pure)
                 );
             }
-            NonNull::new(tp.wrapping_offset(self.offset).cast())
+            NonNull::new(tp.wrapping_offset(offset).cast())
         }
     }
-}
-
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
-unsafe extern "C" {
-    static __rseq_offset: libc::ptrdiff_t;
-    static __rseq_size: libc::c_uint;
 }
