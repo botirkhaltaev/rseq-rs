@@ -1,9 +1,10 @@
 //! Per-CPU intrusive stack.
 //!
 //! Upstream: librseq `basic_percpu_ops_test.c` (per-CPU list), librseq
-//! mempool free list (`src/rseq-mempool.c`). Store `next` on a
-//! thread-owned node, then `cmpeqv_storev` the head. Two committing
-//! stores in one CS is not restartable — that was #135.
+//! mempool free list (`src/rseq-mempool.c`). Push is `store_if`: scratch
+//! store of `next` on a thread-owned node, then one committing store of
+//! the head. Two committing stores in one CS is not restartable — that
+//! was #135.
 //!
 //! Isolated and fan-in vs an `AtomicUsize` Treiber stack and a TLS `Cell`
 //! head. Non-rseq benches run even if rseq is unavailable.
@@ -15,8 +16,10 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use core::ptr::NonNull;
 use criterion::{Criterion, criterion_group, criterion_main};
-use rseq_rs::{Error, Rseq, Thread, Words};
+
+use rseq_rs::{Error, Rseq, Thread, Word, Words};
 
 const EMPTY: usize = 0;
 
@@ -186,12 +189,19 @@ impl List {
 
     fn push_rseq(&self, thread: Thread, words: &Words, node: usize) {
         loop {
-            let head = add(thread, words, 0);
-            self.next[node].store(head, Ordering::Relaxed);
-            match cas(thread, words, head, node) {
+            let Some(cpu) = thread.cpu_id() else {
+                continue;
+            };
+            let Some(w) = words.get(cpu) else {
+                continue;
+            };
+            // SAFETY: `w` is a live word from `words.get`.
+            let head = unsafe { w.as_ptr().as_ref() }.load(Ordering::Relaxed);
+            // SAFETY: `next[node]` is a live aligned word; this bench owns it.
+            let side = unsafe { Word::from_raw(NonNull::from(&self.next[node]), cpu) };
+            match thread.store_if(w, head, node, side, head) {
                 Ok(_) => return,
-                Err(Error::Miss(cur)) => self.next[node].store(cur, Ordering::Relaxed),
-                Err(Error::Abort) => {}
+                Err(Error::Miss(_) | Error::Abort) => {}
             }
         }
     }

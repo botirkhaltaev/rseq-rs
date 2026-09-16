@@ -50,6 +50,10 @@ loop {
 }
 ```
 
+`store_if(word, expect, new, side, side_new)` is librseq
+`cmpeqv_trystorev_storev`: scratch store to `side`, then one committing
+store to `word`. `side.cpu` must equal `word.cpu`.
+
 One attempt per call. Kernel preemption restarts inside the CS. CPU
 mismatch is `Err(Abort)` — re-read `cpu_id` and pick again. Do not retry
 the same `Word`. Compare-miss is `Err(Miss(current))`. No lock, no CAS.
