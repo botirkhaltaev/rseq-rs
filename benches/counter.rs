@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 //! Per-CPU counter.
 //!
 //! Upstream: librseq `rseq_addv` (`include/rseq/arch/x86.h`), kernel
@@ -32,7 +34,7 @@ fn pin(cpu: u32) -> bool {
 }
 
 fn setup() -> Option<(Thread, Words)> {
-    let rseq = Rseq::try_new()?;
+    let rseq = Rseq::new()?;
     let thread = rseq.bind()?;
     let cpu = thread.cpu_id()?;
     if !pin(cpu.get()) {
@@ -181,7 +183,7 @@ fn isolated(c: &mut Criterion) {
 
 fn fanin_benches(c: &mut Criterion) {
     let n = workers();
-    if let Some(rseq) = Rseq::try_new()
+    if let Some(rseq) = Rseq::new()
         && let Some(words) = rseq.words()
     {
         let words = Arc::new(words);

@@ -2,32 +2,16 @@
 
 use core::{ptr::NonNull, sync::atomic::AtomicUsize};
 
-use crate::abi::{Area, CPU_ID_OFF, CS_OFF, SIG};
-
-pub(crate) enum Attempt {
-    Ok(usize),
-    Miss(usize),
-    Abort,
-}
-
-impl Attempt {
-    #[inline]
-    fn from_status(status: u64, value: usize) -> Self {
-        match status {
-            0 => Self::Ok(value),
-            1 => Self::Miss(value),
-            _ => Self::Abort,
-        }
-    }
-}
+use crate::abi::{Area, CS_OFF, SIG};
+use crate::attempt::Attempt;
 
 /// # Safety
 /// `area` is this thread's rseq TLS and `word` is a live `AtomicUsize`.
 #[inline]
-pub(crate) unsafe fn compare_exchange(
+pub(crate) unsafe fn compare_exchange<const ID_OFF: usize>(
     area: NonNull<Area>,
     word: *mut AtomicUsize,
-    cpu: u32,
+    id: u32,
     expect: usize,
     new: usize,
 ) -> Attempt {
@@ -52,8 +36,8 @@ pub(crate) unsafe fn compare_exchange(
             "add {tmp}, {tmp}, :lo12:99b",
             "str {tmp}, [{rseq}, #{cs_off}]",
             "12:",
-            "ldr {got:w}, [{rseq}, #{cpu_id_off}]",
-            "cmp {got:w}, {cpu:w}",
+            "ldr {got:w}, [{rseq}, #{id_off}]",
+            "cmp {got:w}, {id:w}",
             "b.ne 19f",
             "ldr {current}, [{word}]",
             "cmp {current}, {expect}",
@@ -71,7 +55,7 @@ pub(crate) unsafe fn compare_exchange(
             "30:",
             rseq = in(reg) area.as_ptr(),
             word = in(reg) word,
-            cpu = in(reg) cpu,
+            id = in(reg) id,
             expect = in(reg) expect,
             new = in(reg) new,
             got = out(reg) _,
@@ -79,7 +63,7 @@ pub(crate) unsafe fn compare_exchange(
             current = out(reg) current,
             status = lateout(reg) status,
             sig = const SIG,
-            cpu_id_off = const CPU_ID_OFF,
+            id_off = const ID_OFF,
             cs_off = const CS_OFF,
             options(nostack),
         );
@@ -90,10 +74,10 @@ pub(crate) unsafe fn compare_exchange(
 /// # Safety
 /// `area` is this thread's rseq TLS and `word` is a live `AtomicUsize`.
 #[inline]
-pub(crate) unsafe fn fetch_add(
+pub(crate) unsafe fn fetch_add<const ID_OFF: usize>(
     area: NonNull<Area>,
     word: *mut AtomicUsize,
-    cpu: u32,
+    id: u32,
     count: usize,
 ) -> Attempt {
     let prev: usize;
@@ -118,8 +102,8 @@ pub(crate) unsafe fn fetch_add(
             "add {tmp}, {tmp}, :lo12:89b",
             "str {tmp}, [{rseq}, #{cs_off}]",
             "22:",
-            "ldr {got:w}, [{rseq}, #{cpu_id_off}]",
-            "cmp {got:w}, {cpu:w}",
+            "ldr {got:w}, [{rseq}, #{id_off}]",
+            "cmp {got:w}, {id:w}",
             "b.ne 29f",
             "ldr {prev}, [{word}]",
             "add {sum}, {prev}, {count}",
@@ -133,7 +117,7 @@ pub(crate) unsafe fn fetch_add(
             "20:",
             rseq = in(reg) area.as_ptr(),
             word = in(reg) word,
-            cpu = in(reg) cpu,
+            id = in(reg) id,
             count = in(reg) count,
             got = out(reg) _,
             tmp = out(reg) _,
@@ -141,7 +125,7 @@ pub(crate) unsafe fn fetch_add(
             prev = out(reg) prev,
             status = lateout(reg) status,
             sig = const SIG,
-            cpu_id_off = const CPU_ID_OFF,
+            id_off = const ID_OFF,
             cs_off = const CS_OFF,
             options(nostack),
         );
@@ -152,10 +136,10 @@ pub(crate) unsafe fn fetch_add(
 /// # Safety
 /// `area` is this thread's rseq TLS; `word` and `side` are live `AtomicUsize`s.
 #[inline]
-pub(crate) unsafe fn store_if(
+pub(crate) unsafe fn store_if<const ID_OFF: usize>(
     area: NonNull<Area>,
     word: *mut AtomicUsize,
-    cpu: u32,
+    id: u32,
     expect: usize,
     new: usize,
     side: *mut AtomicUsize,
@@ -183,8 +167,8 @@ pub(crate) unsafe fn store_if(
             "add {tmp}, {tmp}, :lo12:79b",
             "str {tmp}, [{rseq}, #{cs_off}]",
             "32:",
-            "ldr {got:w}, [{rseq}, #{cpu_id_off}]",
-            "cmp {got:w}, {cpu:w}",
+            "ldr {got:w}, [{rseq}, #{id_off}]",
+            "cmp {got:w}, {id:w}",
             "b.ne 39f",
             "ldr {current}, [{word}]",
             "cmp {current}, {expect}",
@@ -203,7 +187,7 @@ pub(crate) unsafe fn store_if(
             "40:",
             rseq = in(reg) area.as_ptr(),
             word = in(reg) word,
-            cpu = in(reg) cpu,
+            id = in(reg) id,
             expect = in(reg) expect,
             new = in(reg) new,
             side = in(reg) side,
@@ -213,7 +197,7 @@ pub(crate) unsafe fn store_if(
             current = out(reg) current,
             status = lateout(reg) status,
             sig = const SIG,
-            cpu_id_off = const CPU_ID_OFF,
+            id_off = const ID_OFF,
             cs_off = const CS_OFF,
             options(nostack),
         );

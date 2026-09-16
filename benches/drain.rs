@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 //! Cross-CPU drain.
 //!
 //! Upstream: tcmalloc `FenceCpu` / `Drain` (`tcmalloc/internal/percpu.cc`,
@@ -30,7 +32,7 @@ fn pin(cpu: u32) -> bool {
 }
 
 fn setup() -> Option<(Rseq, Thread, Words)> {
-    let rseq = Rseq::try_new()?;
+    let rseq = Rseq::new()?;
     let thread = rseq.bind()?;
     let cpu = thread.cpu_id()?;
     if !pin(cpu.get()) {
@@ -157,7 +159,7 @@ fn steal_all(rseq: Rseq, words: &Words) {
             continue;
         };
         // SAFETY: `w` is a live word in `words`.
-        black_box(unsafe { w.as_ptr().as_ref() }.swap(0, Ordering::Relaxed));
+        black_box(unsafe { &*w.as_ptr() }.swap(0, Ordering::Relaxed));
     }
 }
 
@@ -193,7 +195,7 @@ fn steal(c: &mut Criterion) {
 }
 
 fn add_under_steal(c: &mut Criterion) {
-    let Some(rseq) = Rseq::try_new() else {
+    let Some(rseq) = Rseq::new() else {
         return;
     };
     let Some(words) = rseq.words() else {

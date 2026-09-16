@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 //! Per-CPU intrusive stack.
 //!
 //! Upstream: librseq `basic_percpu_ops_test.c` (per-CPU list), librseq
@@ -16,7 +18,6 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use core::ptr::NonNull;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 use rseq_rs::{Error, Rseq, Thread, Word, Words};
@@ -36,7 +37,7 @@ fn pin(cpu: u32) -> bool {
 }
 
 fn setup() -> Option<(Thread, Words)> {
-    let rseq = Rseq::try_new()?;
+    let rseq = Rseq::new()?;
     let thread = rseq.bind()?;
     let cpu = thread.cpu_id()?;
     if !pin(cpu.get()) {
@@ -196,9 +197,8 @@ impl List {
                 continue;
             };
             // SAFETY: `w` is a live word from `words.get`.
-            let head = unsafe { w.as_ptr().as_ref() }.load(Ordering::Relaxed);
-            // SAFETY: `next[node]` is a live aligned word; this bench owns it.
-            let side = unsafe { Word::from_raw(NonNull::from(&self.next[node]), cpu) };
+            let head = unsafe { &*w.as_ptr() }.load(Ordering::Relaxed);
+            let side = Word::new(&self.next[node], cpu);
             match thread.store_if(w, head, node, side, head) {
                 Ok(_) => return,
                 Err(Error::Miss(_) | Error::Abort) => {}
@@ -302,7 +302,7 @@ fn fanin_benches(c: &mut Criterion) {
     let n = workers();
     let nodes = n.saturating_mul(4).max(8);
 
-    if let Some(rseq) = Rseq::try_new()
+    if let Some(rseq) = Rseq::new()
         && let Some(words) = rseq.words()
     {
         let words = Arc::new(words);

@@ -1,6 +1,7 @@
 //! Abort-heavy uniqueness. `cargo test -p rseq-rs -- --ignored`.
 
-use std::mem::size_of;
+mod common;
+
 use std::os::raw::c_int;
 use std::sync::{
     Arc,
@@ -9,16 +10,9 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rseq_rs::{Error, Rseq, Words};
+use rseq_rs::{Error, Index, Rseq, Thread, Words};
 
-fn pin(cpu: usize) -> bool {
-    unsafe {
-        let mut set = std::mem::zeroed::<libc::cpu_set_t>();
-        libc::CPU_ZERO(&mut set);
-        libc::CPU_SET(cpu, &mut set);
-        libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) == 0
-    }
-}
+use common::pin;
 
 extern "C" fn ignore_alrm(_sig: c_int) {}
 
@@ -46,7 +40,7 @@ fn sum_words(rseq: Rseq, words: &Words) -> usize {
     let ncpus = usize::try_from(rseq.cpus()).expect("cpus");
     let mut sum = 0;
     for cpu in 0..ncpus {
-        pin(cpu);
+        pin(cpu as u32);
         loop {
             let thread = rseq.bind().expect("bind");
             let id = thread.cpu_id().expect("cpu");
@@ -64,13 +58,10 @@ fn sum_words(rseq: Rseq, words: &Words) -> usize {
     sum
 }
 
-#[ignore = "affinity flap and SIGALRM; run with --ignored"]
-#[test]
-fn unique_add_under_migration_and_signals() {
-    let Some(rseq) = Rseq::try_new() else {
-        eprintln!("skip: rseq unavailable");
-        return;
-    };
+fn unique_add<K: Index + Send + Sync>(
+    rseq: Rseq,
+    next: impl Fn(&Thread) -> Option<K> + Send + Sync + Copy + 'static,
+) {
     let words = Arc::new(rseq.words().expect("words"));
     let ncpus = usize::try_from(rseq.cpus()).expect("cpus");
     let nthreads = 8.min(ncpus.saturating_mul(2).max(2));
@@ -85,12 +76,12 @@ fn unique_add_under_migration_and_signals() {
             let thread = rseq.bind().expect("bind");
             let mut i = 0usize;
             while Instant::now() < deadline {
-                pin(i % ncpus);
-                let Some(cpu) = thread.cpu_id() else {
+                pin((i % ncpus) as u32);
+                let Some(key) = next(&thread) else {
                     i += 1;
                     continue;
                 };
-                let Some(w) = words.get(cpu) else {
+                let Some(w) = words.get(key) else {
                     i += 1;
                     continue;
                 };
@@ -110,8 +101,21 @@ fn unique_add_under_migration_and_signals() {
 
 #[ignore = "affinity flap and SIGALRM; run with --ignored"]
 #[test]
+fn unique_add_under_migration_and_signals() {
+    let Some(rseq) = Rseq::new() else {
+        eprintln!("skip: rseq unavailable");
+        return;
+    };
+    unique_add(rseq, Thread::cpu_id);
+    if rseq.bind().and_then(|t| t.cid()).is_some() {
+        unique_add(rseq, Thread::cid);
+    }
+}
+
+#[ignore = "affinity flap and SIGALRM; run with --ignored"]
+#[test]
 fn no_lost_cas_under_migration_and_signals() {
-    let Some(rseq) = Rseq::try_new() else {
+    let Some(rseq) = Rseq::new() else {
         eprintln!("skip: rseq unavailable");
         return;
     };
@@ -130,7 +134,7 @@ fn no_lost_cas_under_migration_and_signals() {
             let mut i = 0usize;
             let mut expect = 0usize;
             while Instant::now() < deadline {
-                pin(i % ncpus);
+                pin((i % ncpus) as u32);
                 let Some(cpu) = thread.cpu_id() else {
                     i += 1;
                     continue;

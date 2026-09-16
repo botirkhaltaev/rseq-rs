@@ -9,18 +9,18 @@ sequences on a caller-chosen word. Not a runic hit path, not a magazine.
 ```rust
 use rseq_rs::Rseq;
 
-let rseq = Rseq::try_new()?;
+let rseq = Rseq::new()?;
 let t = rseq.bind()?;
 let cpu = t.cpu_id()?;
 assert!(cpu.get() < rseq.cpus());
 let _ = rseq.fence(cpu);
 ```
 
-`try_new` / `bind` are `#[cold]`. Store `Thread` in caller TLS. `None` means
+`new` / `bind` are `#[cold]`. Store `Thread` in caller TLS. `None` means
 the kernel has no rseq — use `AtomicUsize`, not a hidden lock here. glibc's
 area is used when present; otherwise the crate registers a 32-byte TLS
 area and unregisters it at thread exit. `fence` is optional and registers
-membarrier itself.
+membarrier itself. It targets a CPU; a cid word has no CPU.
 
 ## Words region
 
@@ -32,14 +32,15 @@ let w = words.get(cpu)?;
 ```
 
 `get` borrows `words` — keep the region alive. Embedder field:
-`unsafe Word::from_raw(ptr, cpu)`.
+`Word::new(&atomic, cpu)`. Slot count is possible CPUs; `mm_cid` is `<`
+allowed CPUs `<=` possible CPUs, so `rseq.words()` covers cids.
 
 ## Word ops (Linux x86-64 / aarch64)
 
 ```rust
 use rseq_rs::{Error, Rseq};
 
-let rseq = Rseq::try_new()?;
+let rseq = Rseq::new()?;
 let t = rseq.bind()?;
 let words = rseq.words()?;
 loop {
@@ -54,15 +55,25 @@ loop {
 
 `store_if(word, expect, new, side, side_new)` is librseq
 `cmpeqv_trystorev_storev`: scratch store to `side`, then one committing
-store to `word`. `side.cpu` must equal `word.cpu`.
+store to `word`. `side.key` must equal `word.key`.
 
-One attempt per call. Kernel preemption restarts inside the CS. CPU
-mismatch is `Err(Abort)` — re-read `cpu_id` and pick again. Do not retry
-the same `Word`. Compare-miss is `Err(Miss(current))`. No lock, no CAS.
+On kernels that populate `mm_cid`, index by cid instead of `cpu_id`:
+
+```rust
+let cid = t.cid()?;
+let w = words.get(cid)?;
+```
+
+One attempt per call. Kernel preemption restarts inside the CS. Index
+mismatch is `Err(Abort)` — re-read `cpu_id` or `cid` and pick again. Do
+not retry the same `Word`. Compare-miss is `Err(Miss(current))`. No lock,
+no CAS.
 
 A bad abort signature is SIGSEGV, not `Error::Abort`.
 
-Stress (ignored): `cargo test -- --ignored`.
+Stress (ignored): `cargo test -- --ignored`. Tests that need rseq, two
+CPUs, a pin, or `mm_cid` print `skip:` and pass when the host cannot
+run them.
 
 Use-case benches (one file each). Isolated numbers: `taskset -c 0`.
 `counter` / `cached` report a bare-`Word` CS next to the retry-loop caller.

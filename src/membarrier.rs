@@ -4,8 +4,6 @@ use std::sync::OnceLock;
 
 use crate::thread::CpuId;
 
-const PRIVATE_EXPEDITED_RSEQ: libc::c_int = 1 << 7;
-const REGISTER_PRIVATE_EXPEDITED_RSEQ: libc::c_int = 1 << 8;
 const FLAG_CPU: libc::c_int = 1 << 0;
 
 static READY: OnceLock<bool> = OnceLock::new();
@@ -18,7 +16,12 @@ impl Membarrier {
         *READY.get_or_init(|| {
             // SAFETY: `SYS_membarrier` takes (cmd, flags, cpuid). No memory operands.
             unsafe {
-                libc::syscall(libc::SYS_membarrier, REGISTER_PRIVATE_EXPEDITED_RSEQ, 0, 0) == 0
+                libc::syscall(
+                    libc::SYS_membarrier,
+                    libc::MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ,
+                    0,
+                    0,
+                ) == 0
             }
         })
     }
@@ -32,6 +35,13 @@ impl Membarrier {
             return false;
         };
         // SAFETY: `SYS_membarrier` takes (cmd, flags, cpuid). No memory operands.
-        unsafe { libc::syscall(libc::SYS_membarrier, PRIVATE_EXPEDITED_RSEQ, FLAG_CPU, cpu) == 0 }
+        unsafe {
+            libc::syscall(
+                libc::SYS_membarrier,
+                libc::MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ,
+                FLAG_CPU,
+                cpu,
+            ) == 0
+        }
     }
 }

@@ -1,11 +1,16 @@
-use core::ptr::NonNull;
+//! Word ops on the current CPU.
+
+mod common;
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use rseq_rs::{CpuId, Error, Rseq, Word};
 
+use common::pin;
+
 #[test]
 fn compare_exchange_and_add() {
-    let Some(rseq) = Rseq::try_new() else {
+    let Some(rseq) = Rseq::new() else {
         eprintln!("skip: rseq unavailable");
         return;
     };
@@ -18,8 +23,7 @@ fn compare_exchange_and_add() {
     assert_eq!(thread.fetch_add(w, 1), Ok(7));
     assert_eq!(thread.compare_exchange(w, 8, 8), Ok(8));
     let side = AtomicUsize::new(0);
-    // SAFETY: `side` is a live aligned word; this test owns it for the ops.
-    let s = unsafe { Word::from_raw(NonNull::from(&side), cpu) };
+    let s = Word::new(&side, cpu);
     assert_eq!(thread.store_if(w, 8, 9, s, 3), Ok(8));
     assert_eq!(side.load(Ordering::Relaxed), 3);
     side.store(4, Ordering::Relaxed);
@@ -29,7 +33,7 @@ fn compare_exchange_and_add() {
 
 #[test]
 fn isolated_cpus() {
-    let Some(rseq) = Rseq::try_new() else {
+    let Some(rseq) = Rseq::new() else {
         eprintln!("skip: rseq unavailable");
         return;
     };
@@ -76,7 +80,7 @@ fn isolated_cpus() {
 
 #[test]
 fn wrong_cpu_aborts() {
-    let Some(rseq) = Rseq::try_new() else {
+    let Some(rseq) = Rseq::new() else {
         eprintln!("skip: rseq unavailable");
         return;
     };
@@ -101,15 +105,14 @@ fn wrong_cpu_aborts() {
     assert_eq!(thread.compare_exchange(w, 0, 1), Err(Error::Abort));
     assert_eq!(thread.fetch_add(w, 1), Err(Error::Abort));
     let side = AtomicUsize::new(0);
-    // SAFETY: `side` is a live aligned word; this test owns it for the ops.
-    let s = unsafe { Word::from_raw(NonNull::from(&side), other) };
+    let s = Word::new(&side, other);
     assert_eq!(thread.store_if(w, 0, 1, s, 2), Err(Error::Abort));
     assert_eq!(side.load(Ordering::Relaxed), 0);
 }
 
 #[test]
 fn store_if_side_cpu_mismatch() {
-    let Some(rseq) = Rseq::try_new() else {
+    let Some(rseq) = Rseq::new() else {
         eprintln!("skip: rseq unavailable");
         return;
     };
@@ -126,18 +129,7 @@ fn store_if_side_cpu_mismatch() {
     let words = rseq.words().expect("words");
     let w = words.get(here).expect("word");
     let side = AtomicUsize::new(0);
-    // SAFETY: `side` is a live aligned word; this test owns it for the ops.
-    let s = unsafe { Word::from_raw(NonNull::from(&side), other) };
+    let s = Word::new(&side, other);
     assert_eq!(thread.store_if(w, 0, 1, s, 2), Err(Error::Abort));
     assert_eq!(side.load(Ordering::Relaxed), 0);
-}
-
-fn pin(cpu: u32) -> bool {
-    let cpu = cpu as usize;
-    unsafe {
-        let mut set = std::mem::zeroed::<libc::cpu_set_t>();
-        libc::CPU_ZERO(&mut set);
-        libc::CPU_SET(cpu, &mut set);
-        libc::sched_setaffinity(0, core::mem::size_of::<libc::cpu_set_t>(), &raw const set) == 0
-    }
 }

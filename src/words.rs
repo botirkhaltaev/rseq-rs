@@ -1,47 +1,77 @@
-use core::{marker::PhantomData, ptr::NonNull, sync::atomic::AtomicUsize};
+use core::fmt::{self, Debug};
+use core::hash::{Hash, Hasher};
+use core::ptr::NonNull;
+use core::sync::atomic::AtomicUsize;
 
-use crate::{region::Region, thread::CpuId};
+use crate::region::Region;
+use crate::thread::{Cid, CpuId, Index};
 
-/// One word and the CPU it belongs to. librseq's `(v, cpu)`.
+/// One word and the index it belongs to. librseq's `(v, cpu)` / `(v, mm_cid)`.
 ///
-/// [`Words::get`] borrows the region. [`Word::from_raw`] is `'static`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Word<'a> {
-    ptr: NonNull<AtomicUsize>,
-    cpu: CpuId,
-    _a: PhantomData<&'a AtomicUsize>,
+/// [`Words::get`] borrows the region. [`Word::new`] borrows the atomic.
+/// `K` defaults to [`CpuId`] so `Word<'_>` stays the cpu word.
+#[derive(Clone, Copy, Debug)]
+pub struct Word<'a, K: Index = CpuId> {
+    word: &'a AtomicUsize,
+    key: K,
 }
 
-impl Word<'static> {
-    /// Caller-owned word paired with `cpu`.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` is a live aligned [`AtomicUsize`], used only as this word, and
-    /// outlives the ops.
+impl<'a, K: Index> Word<'a, K> {
+    /// Caller-owned word paired with `key`.
     #[must_use]
-    pub const unsafe fn from_raw(ptr: NonNull<AtomicUsize>, cpu: CpuId) -> Self {
-        Self {
-            ptr,
-            cpu,
-            _a: PhantomData,
-        }
+    pub const fn new(word: &'a AtomicUsize, key: K) -> Self {
+        Self { word, key }
+    }
+
+    /// The index this word was picked with.
+    #[must_use]
+    pub const fn key(self) -> K {
+        self.key
+    }
+
+    /// Raw pointer for the CS. Same address as the borrowed atomic.
+    #[must_use]
+    pub const fn as_ptr(self) -> *mut AtomicUsize {
+        core::ptr::from_ref(self.word).cast_mut()
     }
 }
 
-impl Word<'_> {
+impl Word<'_, CpuId> {
+    /// The CPU this word was picked with.
     #[must_use]
     pub const fn cpu(self) -> CpuId {
-        self.cpu
+        self.key
     }
+}
 
+impl Word<'_, Cid> {
+    /// The concurrency id this word was picked with.
     #[must_use]
-    pub const fn as_ptr(self) -> NonNull<AtomicUsize> {
-        self.ptr
+    pub const fn cid(self) -> Cid {
+        self.key
+    }
+}
+
+impl<K: Index> PartialEq for Word<'_, K> {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self.word, other.word) && self.key == other.key
+    }
+}
+
+impl<K: Index> Eq for Word<'_, K> {}
+
+impl<K: Index + Hash> Hash for Word<'_, K> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        core::ptr::from_ref(self.word).hash(state);
+        self.key.hash(state);
     }
 }
 
 /// Optional mmap of one word per possible CPU.
+///
+/// Slot count is possible CPUs. `mm_cid` is always `<` allowed CPUs `<=`
+/// possible CPUs, so [`crate::Rseq::words`] covers cids. A smaller
+/// [`Words::new`] is valid if [`Self::get`] may be `None`.
 pub struct Words {
     region: Region,
     cpus: u32,
@@ -51,6 +81,15 @@ pub struct Words {
 // `!Send`/`!Sync`; the words are the atomics the CS and drain already share.
 unsafe impl Send for Words {}
 unsafe impl Sync for Words {}
+
+impl Debug for Words {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Words")
+            .field("cpus", &self.cpus)
+            .field("base", &self.region.base())
+            .finish()
+    }
+}
 
 impl Words {
     /// Allocate `cpus` words. `None` if `cpus` is zero or mmap fails.
@@ -65,40 +104,37 @@ impl Words {
         })
     }
 
-    /// Use a caller-owned region of `cpus` words.
+    /// Use a caller-owned `'static` slice of words.
     ///
-    /// # Safety
-    ///
-    /// `base` is live for `cpus` aligned [`AtomicUsize`]s (`cpus > 0`), used
-    /// only as this crate's per-CPU words, and outlives `Self`.
+    /// `None` if the slice is empty or longer than `u32::MAX`.
     #[must_use]
-    pub unsafe fn from_raw(base: NonNull<u8>, cpus: u32) -> Self {
-        debug_assert!(cpus > 0);
-        Self {
-            region: Region::raw(base),
-            cpus,
+    pub fn from_static(words: &'static [AtomicUsize]) -> Option<Self> {
+        let cpus = u32::try_from(words.len()).ok()?;
+        if cpus == 0 {
+            return None;
         }
+        Some(Self {
+            region: Region::raw(NonNull::from(&words[0]).cast()),
+            cpus,
+        })
     }
 
-    /// Words in the region.
+    /// Slot count. May be indexed by [`CpuId`] or [`Cid`].
     #[must_use]
     pub const fn cpus(&self) -> u32 {
         self.cpus
     }
 
-    /// Pointer plus `cpu`. Address math, not a critical section.
+    /// Pointer plus `key`. Address math, not a critical section.
     #[must_use]
-    pub fn get(&self, cpu: CpuId) -> Option<Word<'_>> {
-        let id = cpu.get();
+    pub fn get<K: Index>(&self, key: K) -> Option<Word<'_, K>> {
+        let id = key.get();
         if id >= self.cpus {
             return None;
         }
         // SAFETY: `id` is in range; mmap of usizes is aligned.
         let ptr = unsafe { self.region.word(id) };
-        Some(Word {
-            ptr,
-            cpu,
-            _a: PhantomData,
-        })
+        // SAFETY: `ptr` is a live aligned AtomicUsize in this region.
+        Some(Word::new(unsafe { ptr.as_ref() }, key))
     }
 }

@@ -1,4 +1,6 @@
-use core::ptr::NonNull;
+//! Region sizing and `Words::from_static`.
+
+use core::sync::atomic::AtomicUsize;
 
 use rseq_rs::{CpuId, Word, Words};
 
@@ -17,32 +19,13 @@ fn new_sizes() {
 }
 
 #[test]
-fn from_raw_sizes() {
-    let len = 4096usize;
-    // SAFETY: anonymous private page.
-    let ptr = unsafe {
-        libc::mmap(
-            core::ptr::null_mut(),
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-            -1,
-            0,
-        )
-    };
-    assert_ne!(ptr, libc::MAP_FAILED);
-    let base = NonNull::new(ptr.cast()).expect("non-null mmap");
-    // SAFETY: `base` is a live page we own until after `Words` drops.
-    let words = unsafe { Words::from_raw(base, 2) };
+fn from_static_sizes() {
+    static SLOTS: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
+    assert!(Words::from_static(&[]).is_none());
+    let words = Words::from_static(&SLOTS).expect("static");
     assert_eq!(words.cpus(), 2);
     let w = words.get(cpu(1)).expect("cpu 1");
     assert_eq!(w.cpu(), cpu(1));
-    // SAFETY: slot is inside the mapping.
-    let raw = unsafe { Word::from_raw(w.as_ptr(), cpu(1)) };
+    let raw = Word::new(&SLOTS[1], cpu(1));
     assert_eq!(raw.cpu(), cpu(1));
-    drop(words);
-    // SAFETY: mapping is unused after `Words` dropped.
-    unsafe {
-        libc::munmap(ptr, len);
-    }
 }
