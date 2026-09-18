@@ -33,6 +33,42 @@ fn cid_ops() {
     let o = Word::new(&other_word, cid);
     assert_eq!(thread.compare_exchange_if(w, 9, 10, o, 1), Ok(9));
 
+    #[repr(C)]
+    struct Node {
+        tag: usize,
+        next: AtomicUsize,
+    }
+    #[repr(C)]
+    struct Owner {
+        tag: usize,
+        counter: AtomicUsize,
+    }
+    let tail = Node {
+        tag: 0,
+        next: AtomicUsize::new(0),
+    };
+    let node = Node {
+        tag: 0,
+        next: AtomicUsize::new(core::ptr::from_ref(&tail) as usize),
+    };
+    let head = AtomicUsize::new(core::ptr::from_ref(&node) as usize);
+    let h = Word::new(&head, cid);
+    let pop_off = core::mem::offset_of!(Node, next) as isize;
+    // SAFETY: `head` points at `node`; `node.next` is a live usize.
+    let popped = unsafe { thread.load_if_ne(h, 0, pop_off) };
+    assert_eq!(popped, Ok(core::ptr::from_ref(&node) as usize));
+    let target = AtomicUsize::new(10);
+    let owner = Owner {
+        tag: 0,
+        counter: AtomicUsize::new(core::ptr::from_ref(&target) as usize),
+    };
+    let base = AtomicUsize::new(core::ptr::from_ref(&owner) as usize);
+    let p = Word::new(&base, cid);
+    let add_off = core::mem::offset_of!(Owner, counter) as isize;
+    // SAFETY: `*base + add_off` is `owner.counter`, which holds `&target`.
+    let prev = unsafe { thread.fetch_add_at(p, add_off, 3) };
+    assert_eq!(prev, Ok(10));
+
     // Keep the child live so its `mm_cid` is not recycled onto this thread.
     std::thread::scope(|scope| {
         let (ready, wait_ready) = std::sync::mpsc::channel();

@@ -13,7 +13,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rseq_rs::{Error, Index, Rseq, Thread, Word, Words};
+use rseq_rs::{CpuId, Error, Index, Rseq, Thread, Word, Words};
 
 use pin::pin;
 use skip::skip;
@@ -279,4 +279,116 @@ fn no_lost_compare_exchange_if_under_migration_and_signals() {
         return;
     };
     unique_compare_exchange_if(rseq);
+}
+
+#[repr(C)]
+struct PopNode {
+    tag: AtomicUsize,
+    next: AtomicUsize,
+}
+
+fn unique_pop(rseq: Rseq) {
+    const N: usize = 32;
+    let words = Arc::new(rseq.words().expect("words"));
+    let ncpus = usize::try_from(rseq.cpus()).expect("cpus");
+    let nthreads = 8.min(ncpus.saturating_mul(2).max(2));
+    let off = core::mem::offset_of!(PopNode, next) as isize;
+    let mut lists: Vec<Vec<PopNode>> = (0..ncpus)
+        .map(|_| {
+            (0..N)
+                .map(|_| PopNode {
+                    tag: AtomicUsize::new(0),
+                    next: AtomicUsize::new(0),
+                })
+                .collect()
+        })
+        .collect();
+    for list in &mut lists {
+        for i in 0..N.saturating_sub(1) {
+            let nxt = core::ptr::from_ref(&list[i + 1]) as usize;
+            list[i].next.store(nxt, Ordering::Relaxed);
+        }
+    }
+    let lists = Arc::new(lists);
+    for cpu in 0..ncpus {
+        let id = CpuId::new(cpu as u32).expect("cpu");
+        let w = words.get(id).expect("word");
+        let head = core::ptr::from_ref(&lists[cpu][0]) as usize;
+        w.atomic().store(head, Ordering::Relaxed);
+    }
+    let won = Arc::new(AtomicUsize::new(0));
+    start_alrm();
+    let deadline = Instant::now() + Duration::from_millis(400);
+    let mut joins = Vec::new();
+    for _ in 0..nthreads {
+        let words = Arc::clone(&words);
+        let won = Arc::clone(&won);
+        joins.push(thread::spawn(move || {
+            let thread = rseq.bind().expect("bind");
+            let mut i = 0usize;
+            while Instant::now() < deadline {
+                pin((i % ncpus) as u32);
+                let Some(cpu) = thread.cpu_id() else {
+                    i += 1;
+                    continue;
+                };
+                let Some(w) = words.get(cpu) else {
+                    i += 1;
+                    continue;
+                };
+                // SAFETY: heads point at live `PopNode`s in `lists` for the test.
+                match unsafe { thread.load_if_ne(w, 0, off) } {
+                    Ok(p) => {
+                        // SAFETY: `p` is a node from this CPU's list.
+                        let node = unsafe { &*(p as *const PopNode) };
+                        loop {
+                            let Some(now) = thread.cpu_id() else {
+                                continue;
+                            };
+                            let tag = Word::new(&node.tag, now);
+                            match thread.fetch_add(tag, 1) {
+                                Ok(_) => break,
+                                Err(Error::Abort) => {}
+                                Err(Error::Miss(_)) => unreachable!("add is not a compare"),
+                            }
+                        }
+                        won.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(Error::Miss(_)) | Err(Error::Abort) => {}
+                }
+                i += 1;
+            }
+        }));
+    }
+    for j in joins {
+        j.join().expect("join");
+    }
+    stop_alrm();
+    assert_eq!(won.load(Ordering::Relaxed), N.saturating_mul(ncpus));
+    for list in lists.iter() {
+        for node in list {
+            assert_eq!(node.tag.load(Ordering::Relaxed), 1);
+        }
+    }
+    for cpu in 0..ncpus {
+        let id = CpuId::new(cpu as u32).expect("cpu");
+        assert_eq!(
+            words
+                .get(id)
+                .expect("word")
+                .atomic()
+                .load(Ordering::Relaxed),
+            0
+        );
+    }
+}
+
+#[ignore = "affinity flap and SIGALRM; run with --ignored"]
+#[test]
+fn no_lost_pop_under_migration_and_signals() {
+    let Some(rseq) = Rseq::new() else {
+        skip("rseq unavailable");
+        return;
+    };
+    unique_pop(rseq);
 }

@@ -337,6 +337,76 @@ impl Thread {
         }
     }
 
+    /// If `word` is not `expect_not`, replace it with the word at `*word + offset`.
+    ///
+    /// librseq `cmpnev_storeoffp_load` / `rseq_load_cbeq_store_add_load_store`.
+    /// `offset` is a byte offset from the loaded pointer. A wrong pointer or
+    /// offset is the caller's bug, same as C. Returns the old `*word`.
+    ///
+    /// One attempt. Kernel preemption restarts inside the CS. Index mismatch
+    /// is [`Error::Abort`] — re-read [`Self::cpu_id`] or [`Self::cid`] and
+    /// pick a new word.
+    ///
+    /// # Safety
+    ///
+    /// If `*word != expect_not` at CS time, `*word` must be a pointer such that
+    /// `(*word as *const u8).offset(offset)` is a readable, aligned `usize` for
+    /// the whole call. Nothing is dereferenced on [`Error::Miss`] or
+    /// [`Error::Abort`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Miss`] when `*word == expect_not`. [`Error::Abort`] when this
+    /// thread's index is not `word.key`, or rseq is unavailable on this target.
+    #[inline]
+    pub unsafe fn load_if_ne<K: Index>(
+        &self,
+        word: Word<'_, K>,
+        expect_not: usize,
+        offset: isize,
+    ) -> Result<usize, Error> {
+        // SAFETY: the caller guarantees the chase when the compare passes.
+        match unsafe { Self::load_ne::<K>(self.area, word, expect_not, offset) } {
+            Attempt::Ok(old) => Ok(old),
+            Attempt::Miss(current) => Err(Error::Miss(current)),
+            Attempt::Abort => Err(Error::Abort),
+        }
+    }
+
+    /// Add `count` to the word whose address is at `*ptr + offset`.
+    ///
+    /// librseq `offset_deref_addv` / `rseq_load_add_load_load_add_store`.
+    /// `offset` is a byte offset. A wrong pointer or offset is the caller's
+    /// bug, same as C. Returns the previous value of the chased word.
+    ///
+    /// One attempt. Kernel preemption restarts inside the CS. Index mismatch
+    /// is [`Error::Abort`] — re-read [`Self::cpu_id`] or [`Self::cid`] and
+    /// pick a new word.
+    ///
+    /// # Safety
+    ///
+    /// `*ptr + offset` must be a readable, aligned `usize` holding a pointer to
+    /// a live [`core::sync::atomic::AtomicUsize`] that no other thread mutates
+    /// outside rseq for the call.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Abort`] when this thread's index is not `ptr.key`, or rseq is
+    /// unavailable on this target.
+    #[inline]
+    pub unsafe fn fetch_add_at<K: Index>(
+        &self,
+        ptr: Word<'_, K>,
+        offset: isize,
+        count: usize,
+    ) -> Result<usize, Error> {
+        // SAFETY: the caller guarantees `*ptr + offset` is a live pointer to a word.
+        match unsafe { Self::add_at::<K>(self.area, ptr, offset, count) } {
+            Attempt::Ok(prev) => Ok(prev),
+            Attempt::Miss(_) | Attempt::Abort => Err(Error::Abort),
+        }
+    }
+
     /// Compare `word` to `expect`, store `side_new` into `side`, then store `new`.
     ///
     /// This is librseq `cmpeqv_trystorev_storev`. The store to `side` is
@@ -456,6 +526,52 @@ impl Thread {
                 cs::fetch_add::<CPU_ID_OFF>(area, ptr, id, count)
             } else {
                 cs::fetch_add::<MM_CID_OFF>(area, ptr, id, count)
+            }
+        }
+    }
+
+    /// # Safety
+    /// Same contract as [`Self::load_if_ne`].
+    unsafe fn load_ne<K: Index>(
+        area: NonNull<Area>,
+        word: Word<'_, K>,
+        expect_not: usize,
+        offset: isize,
+    ) -> Attempt {
+        const {
+            assert!(K::OFF == CPU_ID_OFF || K::OFF == MM_CID_OFF);
+        }
+        let ptr = word.as_ptr();
+        let id = word.key().get();
+        // SAFETY: `area` is this thread's rseq TLS; the chase is caller-valid.
+        unsafe {
+            if K::OFF == CPU_ID_OFF {
+                cs::load_if_ne::<CPU_ID_OFF>(area, ptr, id, expect_not, offset)
+            } else {
+                cs::load_if_ne::<MM_CID_OFF>(area, ptr, id, expect_not, offset)
+            }
+        }
+    }
+
+    /// # Safety
+    /// Same contract as [`Self::fetch_add_at`].
+    unsafe fn add_at<K: Index>(
+        area: NonNull<Area>,
+        ptr: Word<'_, K>,
+        offset: isize,
+        count: usize,
+    ) -> Attempt {
+        const {
+            assert!(K::OFF == CPU_ID_OFF || K::OFF == MM_CID_OFF);
+        }
+        let word = ptr.as_ptr();
+        let id = ptr.key().get();
+        // SAFETY: `area` is this thread's rseq TLS; the chase is caller-valid.
+        unsafe {
+            if K::OFF == CPU_ID_OFF {
+                cs::fetch_add_at::<CPU_ID_OFF>(area, word, id, offset, count)
+            } else {
+                cs::fetch_add_at::<MM_CID_OFF>(area, word, id, offset, count)
             }
         }
     }

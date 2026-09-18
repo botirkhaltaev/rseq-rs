@@ -286,10 +286,18 @@ registration size ≥ 33, not auxv alone.
 compares, one committing store to `word`. `other.key` must equal
 `word.key` or `Abort` before the CS. No Release variant: librseq has none.
 
+### v0.8.0 — pointer chases
+
+`Thread::load_if_ne` (`cmpnev_storeoffp_load` /
+`rseq_load_cbeq_store_add_load_store`) and `Thread::fetch_add_at`
+(`offset_deref_addv` / `rseq_load_add_load_load_add_store`). Byte offsets,
+same CS as C. Both are `pub unsafe fn` — the only `unsafe` on the public
+API — because the CS dereferences the pointer it loads. `load_if_ne`
+returns the loaded pointer; C's `*load` out-param is not ported.
+
 ### Later
 
 ```text
-load_if_ne / fetch_add_at     — pointer chase in the CS
 store_if_copy + *_release     — memcpy scratch and Release
 1.0 freeze                    — rseq.h map
 RSEQ V2 / time-slice CS

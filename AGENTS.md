@@ -2,7 +2,7 @@
 
 Scope: this repository.
 
-- Safe public API. `unsafe` only private asm / syscalls / mmap.
+- Safe public API. Exception: `Thread::load_if_ne` / `Thread::fetch_add_at` are `pub unsafe fn` because the CS dereferences the pointer it loads; `# Safety` names the caller contract. Otherwise `unsafe` only private asm / syscalls / mmap.
 - No free helpers. Behavior on `Rseq` / `Thread` / `Word` / `Words` / `Cpus` / `Region` / `Membarrier` / `Registration` / `Cid` / `NodeId` / `Available`.
 - Primitive is `Thread` + `Word`. `Words` is an optional mmap. No ops on `Words`.
 - One `struct rseq` per thread: glibc's if registered, else the crate's `Registration` TLS, unregistered at thread exit. User-space writes `rseq_cs` only.
