@@ -56,6 +56,30 @@ pub(crate) unsafe fn compare_exchange_if<const ID_OFF: usize>(
     Attempt::Abort
 }
 
+/// # Safety
+/// Unused: this target has no CS.
+pub(crate) unsafe fn load_if_ne<const ID_OFF: usize>(
+    _area: NonNull<Area>,
+    _word: *mut AtomicUsize,
+    _id: u32,
+    _expect_not: usize,
+    _offset: isize,
+) -> Attempt {
+    Attempt::Abort
+}
+
+/// # Safety
+/// Unused: this target has no CS.
+pub(crate) unsafe fn fetch_add_at<const ID_OFF: usize>(
+    _area: NonNull<Area>,
+    _ptr: *mut AtomicUsize,
+    _id: u32,
+    _offset: isize,
+    _count: usize,
+) -> Attempt {
+    Attempt::Abort
+}
+
 pub(crate) struct Registration;
 
 impl Registration {

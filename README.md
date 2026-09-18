@@ -2,7 +2,8 @@
 
 Safe Linux [restartable sequence](https://google.github.io/tcmalloc/rseq.html)
 word ops. Package `rseq-rs`, lib `rseq_rs`. librseq in Rust — crate-owned
-sequences on a caller-chosen word. Not a magazine allocator.
+sequences on a caller-chosen word. Not a magazine allocator. The two
+pointer-chase ops are `unsafe`.
 
 Release history lives in [ROADMAP.md](ROADMAP.md)#releases. `publish = false`.
 
@@ -72,6 +73,21 @@ store to `word`. `side.key` must equal `word.key`.
 to `word`. `other.key` must equal `word.key`. `Miss` carries the value of
 the compare that failed, `word` first. When both words hold the same
 value, which compare failed is ambiguous.
+
+`load_if_ne(word, expect_not, offset)` is librseq `cmpnev_storeoffp_load`:
+if `*word != expect_not`, store `*(*word + offset)` into `word` and return
+the old pointer. `fetch_add_at(ptr, offset, count)` is `offset_deref_addv`:
+add through the word whose address sits at `*ptr + offset`. Both chase a
+byte offset from a loaded pointer. A wrong pointer or offset is the
+caller's bug, same as C, which is why they are `unsafe`.
+
+```rust,no_run
+# use rseq_rs::{Thread, Word};
+# fn pop(t: Thread, head: Word<'_>, off: isize) -> Result<usize, rseq_rs::Error> {
+// SAFETY: `head` points at a live node; `off` is `offset_of!(Node, next)`.
+unsafe { t.load_if_ne(head, 0, off) }
+# }
+```
 
 On kernels that populate `mm_cid`, index by cid instead of `cpu_id`:
 

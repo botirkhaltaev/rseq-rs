@@ -238,3 +238,133 @@ fn compare_exchange_if_wrong_cpu() {
     assert_eq!(thread.compare_exchange_if(w, 0, 1, o, 0), Err(Error::Abort));
     assert_eq!(side.load(Ordering::Relaxed), 0);
 }
+
+#[repr(C)]
+struct Node {
+    tag: usize,
+    next: AtomicUsize,
+}
+
+#[repr(C)]
+struct Owner {
+    tag: usize,
+    counter: AtomicUsize,
+}
+
+#[test]
+fn load_if_ne_pop_and_miss() {
+    let Some(rseq) = Rseq::new() else {
+        skip("rseq unavailable");
+        return;
+    };
+    let thread = rseq.bind().expect("bind");
+    let cpu = thread.cpu_id().expect("cpu");
+    let tail = Node {
+        tag: 0,
+        next: AtomicUsize::new(0),
+    };
+    let node = Node {
+        tag: 0,
+        next: AtomicUsize::new(core::ptr::from_ref(&tail) as usize),
+    };
+    let head = AtomicUsize::new(core::ptr::from_ref(&node) as usize);
+    let h = Word::new(&head, cpu);
+    let off = core::mem::offset_of!(Node, next) as isize;
+    // SAFETY: `head` points at `node`; `node.next` is a live usize.
+    let old = unsafe { thread.load_if_ne(h, 0, off) };
+    assert_eq!(old, Ok(core::ptr::from_ref(&node) as usize));
+    assert_eq!(
+        head.load(Ordering::Relaxed),
+        core::ptr::from_ref(&tail) as usize
+    );
+    // SAFETY: `head` now points at `tail`; `tail.next` is a live usize.
+    let old = unsafe { thread.load_if_ne(h, 0, off) };
+    assert_eq!(old, Ok(core::ptr::from_ref(&tail) as usize));
+    assert_eq!(head.load(Ordering::Relaxed), 0);
+    // SAFETY: `*head == 0 == expect_not`, so the CS does not dereference.
+    assert_eq!(unsafe { thread.load_if_ne(h, 0, off) }, Err(Error::Miss(0)));
+    assert_eq!(head.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn fetch_add_at_through_field() {
+    let Some(rseq) = Rseq::new() else {
+        skip("rseq unavailable");
+        return;
+    };
+    let thread = rseq.bind().expect("bind");
+    let cpu = thread.cpu_id().expect("cpu");
+    let target = AtomicUsize::new(10);
+    let owner = Owner {
+        tag: 0,
+        counter: AtomicUsize::new(core::ptr::from_ref(&target) as usize),
+    };
+    let base = AtomicUsize::new(core::ptr::from_ref(&owner) as usize);
+    let p = Word::new(&base, cpu);
+    let off = core::mem::offset_of!(Owner, counter) as isize;
+    // SAFETY: `*base + off` is `owner.counter`, which holds `&target`.
+    assert_eq!(unsafe { thread.fetch_add_at(p, off, 3) }, Ok(10));
+    assert_eq!(target.load(Ordering::Relaxed), 13);
+    assert_eq!(
+        base.load(Ordering::Relaxed),
+        core::ptr::from_ref(&owner) as usize
+    );
+}
+
+#[test]
+fn pointer_chase_wrong_cpu() {
+    let Some(rseq) = Rseq::new() else {
+        skip("rseq unavailable");
+        return;
+    };
+    if rseq.cpus() < 2 {
+        skip("need two CPUs");
+        return;
+    }
+    let thread = rseq.bind().expect("bind");
+    let here = thread.cpu_id().expect("cpu");
+    if !pin(here.get()) {
+        skip(&format!("pin {here:?}"));
+        return;
+    }
+    let thread = rseq.bind().expect("bind pinned");
+    let here = thread.cpu_id().expect("cpu");
+    let other = (0..rseq.cpus())
+        .filter_map(CpuId::new)
+        .find(|id| *id != here)
+        .expect("other cpu");
+    let tail = Node {
+        tag: 0,
+        next: AtomicUsize::new(0),
+    };
+    let node = Node {
+        tag: 0,
+        next: AtomicUsize::new(core::ptr::from_ref(&tail) as usize),
+    };
+    let head = AtomicUsize::new(core::ptr::from_ref(&node) as usize);
+    let h = Word::new(&head, other);
+    let pop_off = core::mem::offset_of!(Node, next) as isize;
+    // SAFETY: index mismatch aborts before any chase.
+    let pop = unsafe { thread.load_if_ne(h, 0, pop_off) };
+    assert_eq!(pop, Err(Error::Abort));
+    assert_eq!(
+        head.load(Ordering::Relaxed),
+        core::ptr::from_ref(&node) as usize
+    );
+    let target = AtomicUsize::new(10);
+    let owner = Owner {
+        tag: 0,
+        counter: AtomicUsize::new(core::ptr::from_ref(&target) as usize),
+    };
+    let base = AtomicUsize::new(core::ptr::from_ref(&owner) as usize);
+    let p = Word::new(&base, other);
+    let add_off = core::mem::offset_of!(Owner, counter) as isize;
+    // SAFETY: index mismatch aborts before any chase.
+    let add = unsafe { thread.fetch_add_at(p, add_off, 3) };
+    assert_eq!(add, Err(Error::Abort));
+    assert_eq!(target.load(Ordering::Relaxed), 10);
+    assert_eq!(
+        base.load(Ordering::Relaxed),
+        core::ptr::from_ref(&owner) as usize
+    );
+}
