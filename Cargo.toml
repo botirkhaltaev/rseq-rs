@@ -16,6 +16,11 @@ name = "rseq_rs"
 [lints.rust]
 missing_docs = "deny"
 unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
 
 [profile.bench]
 debug = "line-tables-only"

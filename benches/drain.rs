@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 //! Cross-CPU drain.
 //!
 //! Upstream: tcmalloc `FenceCpu` / `Drain` (`tcmalloc/internal/percpu.cc`,
@@ -16,13 +14,15 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::Criterion;
 use rseq_rs::{CpuId, Error, Rseq, Thread, Words};
 
 fn pin(cpu: u32) -> bool {
     let Ok(cpu) = usize::try_from(cpu) else {
         return false;
     };
+    // SAFETY: `cpu_set_t` is stack-local; `CPU_SET` / `sched_setaffinity` take
+    // a pointer to that set and a length.
     unsafe {
         let mut set = std::mem::zeroed::<libc::cpu_set_t>();
         libc::CPU_ZERO(&mut set);
@@ -158,8 +158,8 @@ fn steal_all(rseq: Rseq, words: &Words) {
         let Some(w) = words.get(cpu) else {
             continue;
         };
-        // SAFETY: `w` is a live word in `words`.
-        black_box(unsafe { &*w.as_ptr() }.swap(0, Ordering::Relaxed));
+        // Live word in `words`; steal after the fence, outside the CS.
+        black_box(w.atomic().swap(0, Ordering::Relaxed));
     }
 }
 
@@ -253,5 +253,10 @@ fn add_under_steal(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, fence_one, steal, add_under_steal);
-criterion_main!(benches);
+fn main() {
+    let mut c = Criterion::default().configure_from_args();
+    fence_one(&mut c);
+    steal(&mut c);
+    add_under_steal(&mut c);
+    c.final_summary();
+}

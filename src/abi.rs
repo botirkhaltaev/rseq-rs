@@ -35,8 +35,10 @@ pub(crate) const AT_RSEQ_FEATURE_SIZE: libc::c_ulong = 27;
 pub(crate) const NODE_FEATURE_SIZE: libc::c_ulong = 24;
 /// `offsetofend(struct rseq, mm_cid)`. Kernel populates `mm_cid` at this size.
 pub(crate) const CID_FEATURE_SIZE: libc::c_ulong = 28;
-/// `offsetofend(struct rseq, slice_ctrl)`. Kernel populates `slice_ctrl` at this size.
-pub(crate) const SLICE_FEATURE_SIZE: libc::c_ulong = 32;
+/// Upstream feature size that includes `slice_ctrl` plus the trailing
+/// reserved byte (33). A 32-byte registration is legacy and does not get
+/// a live `slice_ctrl`.
+pub(crate) const SLICE_FEATURE_SIZE: libc::c_ulong = 33;
 
 #[cfg(test)]
 mod tests {
@@ -65,6 +67,6 @@ mod tests {
         assert_eq!(AT_RSEQ_FEATURE_SIZE, 27);
         assert_eq!(NODE_FEATURE_SIZE, 24);
         assert_eq!(CID_FEATURE_SIZE, 28);
-        assert_eq!(SLICE_FEATURE_SIZE, 32);
+        assert_eq!(SLICE_FEATURE_SIZE, 33);
     }
 }

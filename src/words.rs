@@ -29,9 +29,15 @@ impl<'a, K: Index> Word<'a, K> {
         self.key
     }
 
+    /// The borrowed atomic. Same address the CS stores through.
+    #[must_use]
+    pub const fn atomic(self) -> &'a AtomicUsize {
+        self.word
+    }
+
     /// Raw pointer for the CS. Same address as the borrowed atomic.
     #[must_use]
-    pub const fn as_ptr(self) -> *mut AtomicUsize {
+    pub(crate) const fn as_ptr(self) -> *mut AtomicUsize {
         core::ptr::from_ref(self.word).cast_mut()
     }
 }
@@ -80,6 +86,7 @@ pub struct Words {
 // SAFETY: the mapping is process-private `AtomicUsize`s. `NonNull<u8>` is
 // `!Send`/`!Sync`; the words are the atomics the CS and drain already share.
 unsafe impl Send for Words {}
+// SAFETY: same as `Send`: exclusive mmap of atomics shared only via Relaxed CS / drain.
 unsafe impl Sync for Words {}
 
 impl Debug for Words {

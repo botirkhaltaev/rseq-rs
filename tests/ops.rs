@@ -1,17 +1,21 @@
 //! Word ops on the current CPU.
 
-mod common;
+#[path = "common/pin.rs"]
+mod pin;
+#[path = "common/skip.rs"]
+mod skip;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use rseq_rs::{CpuId, Error, Rseq, Word};
 
-use common::pin;
+use pin::pin;
+use skip::skip;
 
 #[test]
 fn compare_exchange_and_add() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     let thread = rseq.bind().expect("bind");
@@ -34,11 +38,11 @@ fn compare_exchange_and_add() {
 #[test]
 fn isolated_cpus() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     if rseq.cpus() < 2 {
-        eprintln!("skip: need two CPUs");
+        skip("need two CPUs");
         return;
     }
     let words = rseq.words().expect("words");
@@ -49,28 +53,28 @@ fn isolated_cpus() {
         .find(|id| *id != a)
         .expect("other cpu");
     if !pin(a.get()) {
-        eprintln!("skip: pin {a:?}");
+        skip(&format!("pin {a:?}"));
         return;
     }
     let t = rseq.bind().expect("bind a");
     let wa = words.get(t.cpu_id().expect("cpu a")).expect("word a");
     assert_eq!(t.compare_exchange(wa, 0, 11), Ok(0));
     if !pin(b.get()) {
-        eprintln!("skip: pin {b:?}");
+        skip(&format!("pin {b:?}"));
         return;
     }
     let t = rseq.bind().expect("bind b");
     let wb = words.get(t.cpu_id().expect("cpu b")).expect("word b");
     assert_eq!(t.compare_exchange(wb, 0, 22), Ok(0));
     if !pin(a.get()) {
-        eprintln!("skip: re-pin {a:?}");
+        skip(&format!("re-pin {a:?}"));
         return;
     }
     let t = rseq.bind().expect("rebind a");
     let wa = words.get(t.cpu_id().expect("cpu a")).expect("word a");
     assert_eq!(t.compare_exchange(wa, 11, 11), Ok(11));
     if !pin(b.get()) {
-        eprintln!("skip: re-pin {b:?}");
+        skip(&format!("re-pin {b:?}"));
         return;
     }
     let t = rseq.bind().expect("rebind b");
@@ -81,18 +85,18 @@ fn isolated_cpus() {
 #[test]
 fn wrong_cpu_aborts() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     if rseq.cpus() < 2 {
-        eprintln!("skip: need two CPUs");
+        skip("need two CPUs");
         return;
     }
     let words = rseq.words().expect("words");
     let thread = rseq.bind().expect("bind");
     let here = thread.cpu_id().expect("cpu");
     if !pin(here.get()) {
-        eprintln!("skip: pin {here:?}");
+        skip(&format!("pin {here:?}"));
         return;
     }
     let thread = rseq.bind().expect("bind pinned");
@@ -113,11 +117,11 @@ fn wrong_cpu_aborts() {
 #[test]
 fn store_if_side_cpu_mismatch() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     if rseq.cpus() < 2 {
-        eprintln!("skip: need two CPUs");
+        skip("need two CPUs");
         return;
     }
     let thread = rseq.bind().expect("bind");
@@ -137,7 +141,7 @@ fn store_if_side_cpu_mismatch() {
 #[test]
 fn compare_exchange_if_and_miss() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     let thread = rseq.bind().expect("bind");
@@ -161,13 +165,33 @@ fn compare_exchange_if_and_miss() {
 }
 
 #[test]
+fn compare_exchange_if_alias() {
+    let Some(rseq) = Rseq::new() else {
+        skip("rseq unavailable");
+        return;
+    };
+    let thread = rseq.bind().expect("bind");
+    let cpu = thread.cpu_id().expect("cpu");
+    let words = rseq.words().expect("words");
+    let w = words.get(cpu).expect("word");
+    assert_eq!(thread.compare_exchange(w, 0, 5), Ok(0));
+    // `other` aliases `word`: the CS loads the same address twice.
+    assert_eq!(thread.compare_exchange_if(w, 5, 6, w, 5), Ok(5));
+    assert_eq!(thread.compare_exchange(w, 6, 6), Ok(6));
+    assert_eq!(
+        thread.compare_exchange_if(w, 6, 7, w, 0),
+        Err(Error::Miss(6))
+    );
+}
+
+#[test]
 fn compare_exchange_if_key_mismatch() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     if rseq.cpus() < 2 {
-        eprintln!("skip: need two CPUs");
+        skip("need two CPUs");
         return;
     }
     let thread = rseq.bind().expect("bind");
@@ -188,18 +212,18 @@ fn compare_exchange_if_key_mismatch() {
 #[test]
 fn compare_exchange_if_wrong_cpu() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     if rseq.cpus() < 2 {
-        eprintln!("skip: need two CPUs");
+        skip("need two CPUs");
         return;
     }
     let words = rseq.words().expect("words");
     let thread = rseq.bind().expect("bind");
     let here = thread.cpu_id().expect("cpu");
     if !pin(here.get()) {
-        eprintln!("skip: pin {here:?}");
+        skip(&format!("pin {here:?}"));
         return;
     }
     let thread = rseq.bind().expect("bind pinned");

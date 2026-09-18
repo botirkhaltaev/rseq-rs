@@ -1,18 +1,23 @@
 //! `mm_cid` word ops.
 
+#[path = "common/skip.rs"]
+mod skip;
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use rseq_rs::{Error, Rseq, Word};
 
+use skip::skip;
+
 #[test]
 fn cid_ops() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     let thread = rseq.bind().expect("bind");
     let Some(cid) = thread.cid() else {
-        eprintln!("skip: mm_cid not populated");
+        skip("mm_cid not populated");
         return;
     };
     assert!(cid.get() < rseq.cpus());
@@ -43,11 +48,11 @@ fn cid_ops() {
 #[test]
 fn cid_spawned_thread() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     if rseq.bind().and_then(|t| t.cid()).is_none() {
-        eprintln!("skip: mm_cid not populated");
+        skip("mm_cid not populated");
         return;
     }
     let join = std::thread::spawn(move || {

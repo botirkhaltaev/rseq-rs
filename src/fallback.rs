@@ -64,7 +64,7 @@ impl Registration {
     }
 }
 
-pub(crate) fn glibc_offset() -> Option<isize> {
+pub(crate) fn glibc_area_info() -> Option<(isize, usize)> {
     None
 }
 

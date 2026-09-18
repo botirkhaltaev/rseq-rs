@@ -2,7 +2,9 @@
 
 Safe Linux [restartable sequence](https://google.github.io/tcmalloc/rseq.html)
 word ops. Package `rseq-rs`, lib `rseq_rs`. librseq in Rust — crate-owned
-sequences on a caller-chosen word. Not a runic hit path, not a magazine.
+sequences on a caller-chosen word. Not a magazine allocator.
+
+Release history lives in [ROADMAP.md](ROADMAP.md)#releases. `publish = false`.
 
 ## Registration
 
@@ -14,7 +16,7 @@ let rseq = Rseq::new()?;
 let t = rseq.bind()?;
 let cpu = t.cpu_id()?;
 assert!(cpu.get() < rseq.cpus());
-assert_eq!(t.cpu(), cpu);
+assert_eq!(t.cpu(), Some(cpu));
 let _ = t.cpu_id_start();
 let _ = t.node_id();
 let _ = t.slice_ctrl();
@@ -28,6 +30,7 @@ the kernel has no rseq — use `AtomicUsize`, not a hidden lock here. glibc's
 area is used when present; otherwise the crate registers a 32-byte TLS
 area and unregisters it at thread exit. `fence` is optional and registers
 membarrier itself. It targets a CPU; drain a cid word with `fence_all`.
+After `fork`, bind again; membarrier re-registers once on `EPERM`.
 
 ## Words region
 
@@ -67,7 +70,8 @@ store to `word`. `side.key` must equal `word.key`.
 `compare_exchange_if(word, expect, new, other, other_expect)` is librseq
 `cmpeqv_cmpeqv_storev`: both compares must pass, then one committing store
 to `word`. `other.key` must equal `word.key`. `Miss` carries the value of
-the compare that failed, `word` first.
+the compare that failed, `word` first. When both words hold the same
+value, which compare failed is ambiguous.
 
 On kernels that populate `mm_cid`, index by cid instead of `cpu_id`:
 
@@ -85,7 +89,7 @@ A bad abort signature is SIGSEGV, not `Error::Abort`.
 
 Stress (ignored): `cargo test -- --ignored`. Tests that need rseq, two
 CPUs, a pin, or `mm_cid` print `skip:` and pass when the host cannot
-run them.
+run them. Set `RSEQ_REQUIRE=1` to turn those skips into failures (CI does).
 
 Use-case benches (one file each). Isolated numbers: `taskset -c 0`.
 `counter` / `cached` report a bare-`Word` CS next to the retry-loop caller.
@@ -100,4 +104,4 @@ cargo bench --bench drain      # tcmalloc FenceCpu + steal
 Each file reports rseq next to a non-rseq pair (TLS `Cell` and/or `AtomicUsize`).
 Non-rseq benches still run if rseq is unavailable.
 
-See [ROADMAP.md](ROADMAP.md). `publish = false`.
+See [ROADMAP.md](ROADMAP.md).

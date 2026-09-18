@@ -166,10 +166,12 @@ impl Thread {
 
     /// Current CPU: [`Self::cpu_id`], then `sched_getcpu`.
     ///
-    /// librseq `rseq_current_cpu`.
+    /// librseq `rseq_current_cpu`. Never invents an id: `None` if both the
+    /// rseq field and `sched_getcpu` fail. Do not use the result as a word
+    /// key without confirming via [`Self::cpu_id`].
     #[must_use]
-    pub fn cpu(&self) -> CpuId {
-        self.cpu_id().unwrap_or_else(fallback_cpu)
+    pub fn cpu(&self) -> Option<CpuId> {
+        self.cpu_id().or_else(fallback_cpu)
     }
 
     /// Kernel `node_id`. `None` if this kernel does not populate it.
@@ -187,9 +189,12 @@ impl Thread {
     }
 
     /// Current NUMA node: [`Self::node_id`], then `getcpu`.
+    ///
+    /// Never invents an id: `None` if both the rseq field and `getcpu`
+    /// fail. Do not use the result as a word key.
     #[must_use]
-    pub fn node(&self) -> NodeId {
-        self.node_id().unwrap_or_else(fallback_node)
+    pub fn node(&self) -> Option<NodeId> {
+        self.node_id().or_else(fallback_node)
     }
 
     /// Kernel `mm_cid`. `None` if this kernel does not populate it.
@@ -206,7 +211,9 @@ impl Thread {
         }))
     }
 
-    /// Kernel `slice_ctrl`. `None` until auxv covers the field.
+    /// Kernel `slice_ctrl`. `None` until both the kernel feature size and
+    /// this registration are large enough (glibc `__rseq_size >= 33`). The
+    /// crate's own 32-byte self-registration never populates this field.
     ///
     /// librseq `rseq_slice_ctrl_available`.
     #[must_use]
@@ -214,14 +221,14 @@ impl Thread {
         if !self.slice {
             return None;
         }
-        // SAFETY: `area` is 32 bytes; `getauxval` said `slice_ctrl` is live.
+        // SAFETY: registration size covers `slice_ctrl`; kernel writes it.
         Some(unsafe { ptr::addr_of!((*self.area.as_ptr()).slice_ctrl).read_volatile() })
     }
 
     /// Clear `rseq_cs` before reclaiming CS descriptors or JIT code.
     ///
     /// librseq `rseq_prepare_unload` / `rseq_clear_rseq_cs`.
-    pub fn prepare_unload(self) {
+    pub fn prepare_unload(&self) {
         // SAFETY: user-space may write `rseq_cs` only; this thread owns the area.
         unsafe {
             ptr::addr_of_mut!((*self.area.as_ptr()).rseq_cs).write_volatile(0);
@@ -267,7 +274,8 @@ impl Thread {
     /// without entering the CS.
     ///
     /// [`Error::Miss`] carries the seen value of the compare that failed
-    /// (`word` first, else `other`).
+    /// (`word` first, else `other`). When both words hold the same value,
+    /// the caller cannot tell which compare failed.
     ///
     /// One attempt. Kernel preemption restarts inside the CS. Index mismatch
     /// is [`Error::Abort`] — re-read [`Self::cpu_id`] or [`Self::cid`] and
@@ -477,16 +485,13 @@ impl Thread {
     }
 }
 
-fn fallback_cpu() -> CpuId {
+fn fallback_cpu() -> Option<CpuId> {
     // SAFETY: `sched_getcpu` has no memory operands.
     let n = unsafe { libc::sched_getcpu() };
-    u32::try_from(n)
-        .ok()
-        .and_then(CpuId::new)
-        .unwrap_or(CpuId(0))
+    u32::try_from(n).ok().and_then(CpuId::new)
 }
 
-fn fallback_node() -> NodeId {
+fn fallback_node() -> Option<NodeId> {
     let mut cpu = 0u32;
     let mut node = 0u32;
     // SAFETY: `getcpu` writes the two out-params; third arg is unused.
@@ -499,8 +504,8 @@ fn fallback_node() -> NodeId {
         )
     };
     if rc == 0 {
-        NodeId::new(node)
+        Some(NodeId::new(node))
     } else {
-        NodeId::new(0)
+        None
     }
 }

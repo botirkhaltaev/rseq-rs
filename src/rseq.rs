@@ -71,12 +71,16 @@ impl Rseq {
     /// Registers the command on first use.
     ///
     /// A cid word has no CPU. Draining one needs [`Self::fence_all`].
+    /// After `fork`, registration is per-mm: the child may need a fresh
+    /// register (retried once on `EPERM`).
     #[must_use]
     pub fn fence(self, cpu: CpuId) -> bool {
         cpu.get() < self.cpus.get() && Membarrier::fence(cpu)
     }
 
     /// Expedited RSEQ membarrier on every CPU. Use this to drain a cid word.
+    ///
+    /// After `fork`, see [`Self::fence`].
     #[must_use]
     pub fn fence_all(self) -> bool {
         Membarrier::fence_all()
@@ -95,18 +99,23 @@ impl Rseq {
     }
 
     fn init() -> Option<Self> {
-        let mode = if let Some(offset) = registration::glibc_offset() {
-            Mode::Glibc { offset }
+        let (mode, slice) = if let Some((offset, size)) = registration::glibc_area_info() {
+            // `slice_ctrl` is live only when both the kernel feature size and
+            // this registration are large enough. Self-registered stays 32
+            // bytes (legacy); glibc needs `__rseq_size >= 33`.
+            let slice =
+                registration::slice_supported() && (size as u64) >= crate::abi::SLICE_FEATURE_SIZE;
+            (Mode::Glibc { offset }, slice)
         } else {
             Registration::bind()?;
-            Mode::SelfRegistered
+            (Mode::SelfRegistered, false)
         };
         Some(Self {
             mode,
             cpus: Cpus::possible()?,
             node: registration::node_supported(),
             cid: registration::cid_supported(),
-            slice: registration::slice_supported(),
+            slice,
         })
     }
 
