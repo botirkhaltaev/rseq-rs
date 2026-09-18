@@ -51,9 +51,12 @@ impl Registration {
     }
 }
 
-pub(crate) fn glibc_offset() -> Option<isize> {
+/// glibc TLS offset and reported `__rseq_size`. `None` if glibc did not
+/// register (size below the legacy minimum).
+pub(crate) fn glibc_area_info() -> Option<(isize, usize)> {
     // SAFETY: `dlsym` looks up exported glibc symbols. Null means absent.
     let size_p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_size".as_ptr()) };
+    // SAFETY: same as `size_p`; `__rseq_offset` is an exported ptrdiff_t.
     let offset_p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_offset".as_ptr()) };
     if size_p.is_null() || offset_p.is_null() {
         return None;
@@ -64,7 +67,8 @@ pub(crate) fn glibc_offset() -> Option<isize> {
         return None;
     }
     // SAFETY: glibc publishes `__rseq_offset` as `ptrdiff_t`.
-    Some(unsafe { offset_p.cast::<libc::ptrdiff_t>().read() })
+    let offset = unsafe { offset_p.cast::<libc::ptrdiff_t>().read() };
+    Some((offset, size))
 }
 
 pub(crate) fn node_supported() -> bool {
@@ -77,6 +81,8 @@ pub(crate) fn cid_supported() -> bool {
     unsafe { libc::getauxval(AT_RSEQ_FEATURE_SIZE) >= CID_FEATURE_SIZE }
 }
 
+/// Kernel advertises `slice_ctrl` via auxv. The registration must also be
+/// large enough ([`SLICE_FEATURE_SIZE`]); see [`crate::rseq::Rseq::init`].
 pub(crate) fn slice_supported() -> bool {
     // SAFETY: `getauxval` looks up an auxv entry; 0 if the type is absent.
     unsafe { libc::getauxval(AT_RSEQ_FEATURE_SIZE) >= SLICE_FEATURE_SIZE }

@@ -1,6 +1,9 @@
 //! Abort-heavy uniqueness. `cargo test -p rseq-rs -- --ignored`.
 
-mod common;
+#[path = "common/pin.rs"]
+mod pin;
+#[path = "common/skip.rs"]
+mod skip;
 
 use std::os::raw::c_int;
 use std::sync::{
@@ -10,13 +13,16 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rseq_rs::{Error, Index, Rseq, Thread, Words};
+use rseq_rs::{Error, Index, Rseq, Thread, Word, Words};
 
-use common::pin;
+use pin::pin;
+use skip::skip;
 
 extern "C" fn ignore_alrm(_sig: c_int) {}
 
 fn start_alrm() {
+    // SAFETY: install a no-op SIGALRM handler and a 200µs interval timer.
+    // Both syscalls take pointers to stack locals / the handler function.
     unsafe {
         libc::signal(
             libc::SIGALRM,
@@ -30,6 +36,7 @@ fn start_alrm() {
 }
 
 fn stop_alrm() {
+    // SAFETY: clear the interval timer; pointer is to a stack zeroed itimerval.
     unsafe {
         let it = std::mem::zeroed::<libc::itimerval>();
         libc::setitimer(libc::ITIMER_REAL, &raw const it, std::ptr::null_mut());
@@ -99,11 +106,103 @@ fn unique_add<K: Index + Send + Sync>(
     assert_eq!(sum_words(rseq, &words), added.load(Ordering::Relaxed));
 }
 
+fn unique_store_if(rseq: Rseq) {
+    let words = Arc::new(rseq.words().expect("words"));
+    let ncpus = usize::try_from(rseq.cpus()).expect("cpus");
+    let nthreads = 8.min(ncpus.saturating_mul(2).max(2));
+    let won = Arc::new(AtomicUsize::new(0));
+    let sides: Arc<Vec<AtomicUsize>> = Arc::new((0..ncpus).map(|_| AtomicUsize::new(0)).collect());
+    start_alrm();
+    let deadline = Instant::now() + Duration::from_millis(400);
+    let mut joins = Vec::new();
+    for _ in 0..nthreads {
+        let words = Arc::clone(&words);
+        let won = Arc::clone(&won);
+        let sides = Arc::clone(&sides);
+        joins.push(thread::spawn(move || {
+            let thread = rseq.bind().expect("bind");
+            let mut i = 0usize;
+            let mut expect = 0usize;
+            while Instant::now() < deadline {
+                pin((i % ncpus) as u32);
+                let Some(cpu) = thread.cpu_id() else {
+                    i += 1;
+                    continue;
+                };
+                let Some(w) = words.get(cpu) else {
+                    i += 1;
+                    continue;
+                };
+                let side = Word::new(&sides[cpu.get() as usize], cpu);
+                match thread.store_if(w, expect, expect.wrapping_add(1), side, expect) {
+                    Ok(_) => {
+                        won.fetch_add(1, Ordering::Relaxed);
+                        expect = expect.wrapping_add(1);
+                    }
+                    Err(Error::Miss(current)) => expect = current,
+                    Err(Error::Abort) => {}
+                }
+                i += 1;
+            }
+        }));
+    }
+    for j in joins {
+        j.join().expect("join");
+    }
+    stop_alrm();
+    assert_eq!(sum_words(rseq, &words), won.load(Ordering::Relaxed));
+}
+
+fn unique_compare_exchange_if(rseq: Rseq) {
+    let words = Arc::new(rseq.words().expect("words"));
+    let ncpus = usize::try_from(rseq.cpus()).expect("cpus");
+    let nthreads = 8.min(ncpus.saturating_mul(2).max(2));
+    let won = Arc::new(AtomicUsize::new(0));
+    start_alrm();
+    let deadline = Instant::now() + Duration::from_millis(400);
+    let mut joins = Vec::new();
+    for _ in 0..nthreads {
+        let words = Arc::clone(&words);
+        let won = Arc::clone(&won);
+        joins.push(thread::spawn(move || {
+            let thread = rseq.bind().expect("bind");
+            let mut i = 0usize;
+            let mut expect = 0usize;
+            while Instant::now() < deadline {
+                pin((i % ncpus) as u32);
+                let Some(cpu) = thread.cpu_id() else {
+                    i += 1;
+                    continue;
+                };
+                let Some(w) = words.get(cpu) else {
+                    i += 1;
+                    continue;
+                };
+                // Alias `other` with `word` so Miss always carries the word value.
+                match thread.compare_exchange_if(w, expect, expect.wrapping_add(1), w, expect) {
+                    Ok(_) => {
+                        won.fetch_add(1, Ordering::Relaxed);
+                        expect = expect.wrapping_add(1);
+                    }
+                    Err(Error::Miss(current)) => expect = current,
+                    Err(Error::Abort) => {}
+                }
+                i += 1;
+            }
+        }));
+    }
+    for j in joins {
+        j.join().expect("join");
+    }
+    stop_alrm();
+    assert_eq!(sum_words(rseq, &words), won.load(Ordering::Relaxed));
+}
+
 #[ignore = "affinity flap and SIGALRM; run with --ignored"]
 #[test]
 fn unique_add_under_migration_and_signals() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     unique_add(rseq, Thread::cpu_id);
@@ -116,7 +215,7 @@ fn unique_add_under_migration_and_signals() {
 #[test]
 fn no_lost_cas_under_migration_and_signals() {
     let Some(rseq) = Rseq::new() else {
-        eprintln!("skip: rseq unavailable");
+        skip("rseq unavailable");
         return;
     };
     let words = Arc::new(rseq.words().expect("words"));
@@ -160,4 +259,24 @@ fn no_lost_cas_under_migration_and_signals() {
     }
     stop_alrm();
     assert_eq!(sum_words(rseq, &words), won.load(Ordering::Relaxed));
+}
+
+#[ignore = "affinity flap and SIGALRM; run with --ignored"]
+#[test]
+fn no_lost_store_if_under_migration_and_signals() {
+    let Some(rseq) = Rseq::new() else {
+        skip("rseq unavailable");
+        return;
+    };
+    unique_store_if(rseq);
+}
+
+#[ignore = "affinity flap and SIGALRM; run with --ignored"]
+#[test]
+fn no_lost_compare_exchange_if_under_migration_and_signals() {
+    let Some(rseq) = Rseq::new() else {
+        skip("rseq unavailable");
+        return;
+    };
+    unique_compare_exchange_if(rseq);
 }

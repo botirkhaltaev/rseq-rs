@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 //! Per-CPU counter.
 //!
 //! Upstream: librseq `rseq_addv` (`include/rseq/arch/x86.h`), kernel
@@ -18,13 +16,15 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::Criterion;
 use rseq_rs::{Error, Rseq, Thread, Word, Words};
 
 fn pin(cpu: u32) -> bool {
     let Ok(cpu) = usize::try_from(cpu) else {
         return false;
     };
+    // SAFETY: `cpu_set_t` is stack-local; `CPU_SET` / `sched_setaffinity` take
+    // a pointer to that set and a length.
     unsafe {
         let mut set = std::mem::zeroed::<libc::cpu_set_t>();
         libc::CPU_ZERO(&mut set);
@@ -222,5 +222,9 @@ fn fanin_benches(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, isolated, fanin_benches);
-criterion_main!(benches);
+fn main() {
+    let mut c = Criterion::default().configure_from_args();
+    isolated(&mut c);
+    fanin_benches(&mut c);
+    c.final_summary();
+}

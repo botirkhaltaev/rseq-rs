@@ -1,8 +1,10 @@
-//! Shared test helpers.
+//! Thread affinity helper.
 
 /// Pin this thread to `cpu`.
-pub fn pin(cpu: u32) -> bool {
+pub(crate) fn pin(cpu: u32) -> bool {
     let cpu = cpu as usize;
+    // SAFETY: `cpu_set_t` is stack-local; `CPU_SET` / `sched_setaffinity` take
+    // a pointer to that set and a length. No other memory is touched.
     unsafe {
         let mut set = std::mem::zeroed::<libc::cpu_set_t>();
         libc::CPU_ZERO(&mut set);

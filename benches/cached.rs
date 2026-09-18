@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 //! One cached object per CPU.
 //!
 //! Upstream: tcmalloc per-CPU cache front (`docs/rseq.md`,
@@ -17,7 +15,7 @@ use std::cell::Cell;
 use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::Criterion;
 use rseq_rs::{Error, Rseq, Thread, Word, Words};
 
 const OBJ: usize = 1;
@@ -26,6 +24,8 @@ fn pin(cpu: u32) -> bool {
     let Ok(cpu) = usize::try_from(cpu) else {
         return false;
     };
+    // SAFETY: `cpu_set_t` is stack-local; `CPU_SET` / `sched_setaffinity` take
+    // a pointer to that set and a length.
     unsafe {
         let mut set = std::mem::zeroed::<libc::cpu_set_t>();
         libc::CPU_ZERO(&mut set);
@@ -137,5 +137,8 @@ fn isolated(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, isolated);
-criterion_main!(benches);
+fn main() {
+    let mut c = Criterion::default().configure_from_args();
+    isolated(&mut c);
+    c.final_summary();
+}

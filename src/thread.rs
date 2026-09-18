@@ -166,10 +166,12 @@ impl Thread {
 
     /// Current CPU: [`Self::cpu_id`], then `sched_getcpu`.
     ///
-    /// librseq `rseq_current_cpu`.
+    /// librseq `rseq_current_cpu`. Never invents an id: `None` if both the
+    /// rseq field and `sched_getcpu` fail. Do not use the result as a word
+    /// key without confirming via [`Self::cpu_id`].
     #[must_use]
-    pub fn cpu(&self) -> CpuId {
-        self.cpu_id().unwrap_or_else(fallback_cpu)
+    pub fn cpu(&self) -> Option<CpuId> {
+        self.cpu_id().or_else(fallback_cpu)
     }
 
     /// Kernel `node_id`. `None` if this kernel does not populate it.
@@ -187,9 +189,12 @@ impl Thread {
     }
 
     /// Current NUMA node: [`Self::node_id`], then `getcpu`.
+    ///
+    /// Never invents an id: `None` if both the rseq field and `getcpu`
+    /// fail. Do not use the result as a word key.
     #[must_use]
-    pub fn node(&self) -> NodeId {
-        self.node_id().unwrap_or_else(fallback_node)
+    pub fn node(&self) -> Option<NodeId> {
+        self.node_id().or_else(fallback_node)
     }
 
     /// Kernel `mm_cid`. `None` if this kernel does not populate it.
@@ -206,7 +211,9 @@ impl Thread {
         }))
     }
 
-    /// Kernel `slice_ctrl`. `None` until auxv covers the field.
+    /// Kernel `slice_ctrl`. `None` until both the kernel feature size and
+    /// this registration are large enough (glibc `__rseq_size >= 33`). The
+    /// crate's own 32-byte self-registration never populates this field.
     ///
     /// librseq `rseq_slice_ctrl_available`.
     #[must_use]
@@ -214,14 +221,14 @@ impl Thread {
         if !self.slice {
             return None;
         }
-        // SAFETY: `area` is 32 bytes; `getauxval` said `slice_ctrl` is live.
+        // SAFETY: registration size covers `slice_ctrl`; kernel writes it.
         Some(unsafe { ptr::addr_of!((*self.area.as_ptr()).slice_ctrl).read_volatile() })
     }
 
     /// Clear `rseq_cs` before reclaiming CS descriptors or JIT code.
     ///
     /// librseq `rseq_prepare_unload` / `rseq_clear_rseq_cs`.
-    pub fn prepare_unload(self) {
+    pub fn prepare_unload(&self) {
         // SAFETY: user-space may write `rseq_cs` only; this thread owns the area.
         unsafe {
             ptr::addr_of_mut!((*self.area.as_ptr()).rseq_cs).write_volatile(0);
@@ -252,6 +259,58 @@ impl Thread {
         // SAFETY: `self` is bound; `word` is a live AtomicUsize for `word.key`.
         // The CS is a Relaxed atomic RMW; rseq is atomicity vs same-index threads.
         match Self::cas::<K>(self.area, word, expect, new) {
+            Attempt::Ok(old) => Ok(old),
+            Attempt::Miss(current) => Err(Error::Miss(current)),
+            Attempt::Abort => Err(Error::Abort),
+        }
+    }
+
+    /// Compare `word` to `expect` and `other` to `other_expect`, then store `new`.
+    ///
+    /// librseq `cmpeqv_cmpeqv_storev` / `rseq_load_cbne_load_cbne_store`.
+    /// Scratch-free. One committing store to `word`.
+    ///
+    /// `other.key` must equal `word.key` or this returns [`Error::Abort`]
+    /// without entering the CS.
+    ///
+    /// [`Error::Miss`] carries the seen value of the compare that failed
+    /// (`word` first, else `other`). When both words hold the same value,
+    /// the caller cannot tell which compare failed.
+    ///
+    /// One attempt. Kernel preemption restarts inside the CS. Index mismatch
+    /// is [`Error::Abort`] — re-read [`Self::cpu_id`] or [`Self::cid`] and
+    /// pick a new word.
+    ///
+    /// ```compile_fail
+    /// use rseq_rs::{Cid, CpuId, Thread, Word};
+    /// fn mix(
+    ///     t: &Thread,
+    ///     cpu: Word<'_, CpuId>,
+    ///     cid: Word<'_, Cid>,
+    /// ) {
+    ///     let _ = t.compare_exchange_if(cpu, 0, 1, cid, 2);
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Miss`] when either compare fails. [`Error::Abort`] when the
+    /// keys differ, this thread's index is not `word.key`, or rseq is
+    /// unavailable on this target.
+    #[inline]
+    pub fn compare_exchange_if<K: Index>(
+        &self,
+        word: Word<'_, K>,
+        expect: usize,
+        new: usize,
+        other: Word<'_, K>,
+        other_expect: usize,
+    ) -> Result<usize, Error> {
+        if other.key() != word.key() {
+            return Err(Error::Abort);
+        }
+        // SAFETY: `self` is bound; both words are live AtomicUsizes for `word.key`.
+        match Self::cas_if::<K>(self.area, word, expect, new, other, other_expect) {
             Attempt::Ok(old) => Ok(old),
             Attempt::Miss(current) => Err(Error::Miss(current)),
             Attempt::Abort => Err(Error::Abort),
@@ -345,6 +404,46 @@ impl Thread {
         }
     }
 
+    fn cas_if<K: Index>(
+        area: NonNull<Area>,
+        word: Word<'_, K>,
+        expect: usize,
+        new: usize,
+        other: Word<'_, K>,
+        other_expect: usize,
+    ) -> Attempt {
+        const {
+            assert!(K::OFF == CPU_ID_OFF || K::OFF == MM_CID_OFF);
+        }
+        let ptr = word.as_ptr();
+        let id = word.key().get();
+        let other_ptr = other.as_ptr();
+        // SAFETY: `area` is this thread's rseq TLS; both words are live AtomicUsizes.
+        unsafe {
+            if K::OFF == CPU_ID_OFF {
+                cs::compare_exchange_if::<CPU_ID_OFF>(
+                    area,
+                    ptr,
+                    id,
+                    expect,
+                    new,
+                    other_ptr,
+                    other_expect,
+                )
+            } else {
+                cs::compare_exchange_if::<MM_CID_OFF>(
+                    area,
+                    ptr,
+                    id,
+                    expect,
+                    new,
+                    other_ptr,
+                    other_expect,
+                )
+            }
+        }
+    }
+
     fn add<K: Index>(area: NonNull<Area>, word: Word<'_, K>, count: usize) -> Attempt {
         const {
             assert!(K::OFF == CPU_ID_OFF || K::OFF == MM_CID_OFF);
@@ -386,16 +485,13 @@ impl Thread {
     }
 }
 
-fn fallback_cpu() -> CpuId {
+fn fallback_cpu() -> Option<CpuId> {
     // SAFETY: `sched_getcpu` has no memory operands.
     let n = unsafe { libc::sched_getcpu() };
-    u32::try_from(n)
-        .ok()
-        .and_then(CpuId::new)
-        .unwrap_or(CpuId(0))
+    u32::try_from(n).ok().and_then(CpuId::new)
 }
 
-fn fallback_node() -> NodeId {
+fn fallback_node() -> Option<NodeId> {
     let mut cpu = 0u32;
     let mut node = 0u32;
     // SAFETY: `getcpu` writes the two out-params; third arg is unused.
@@ -408,8 +504,8 @@ fn fallback_node() -> NodeId {
         )
     };
     if rc == 0 {
-        NodeId::new(node)
+        Some(NodeId::new(node))
     } else {
-        NodeId::new(0)
+        None
     }
 }

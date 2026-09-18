@@ -88,7 +88,7 @@ Other targets: types exist; `new` returns `None`. Dependents compile
 everywhere. Word width is `usize` (librseq `intptr_t`). Linux aarch64 uses
 the same API as x86_64.
 
-## What #135 got wrong
+## What went wrong before (internal)
 
 Tried in [runic#135](https://github.com/botirkhaltaev/runic/issues/135),
 reverted. Recorded as churn/64 65.3 vs TLS magazine 43.6. Three impl bugs
@@ -115,8 +115,10 @@ types. v0.1 is the word ops, not another magazine.
 
 - Kernel 6.12, glibc 2.34 with the RHEL 9 rseq backport.
 - `__rseq_offset` / `__rseq_size` / `__rseq_flags` live in `ld.so`.
-- glibc `__rseq_size` reports 20. Every kernel registration is 32 bytes.
-  Kernel populates `node_id` / `mm_cid`.
+- glibc `__rseq_size` reports 20 on this host (legacy). Kernel registrations
+  are at least 32 bytes; glibc 2.41+ may register `max(feature_size, 32)`.
+  `slice_ctrl` needs feature size 33 and a registration that large.
+  Kernel populates `node_id` / `mm_cid` when auxv covers them.
 - `AT_RSEQ_FEATURE_SIZE` is 28 (`offsetofend(mm_cid)`). That is the
   liveness gate, not `__rseq_size`.
 - Self-register via `SYS_rseq` returns `EINVAL` while glibc holds the area.
@@ -130,8 +132,10 @@ The kernel registers **one** per-thread `struct rseq` (`rseq(2)`). glibc
 registers. A second `SYS_rseq` is `EINVAL`. Libraries share glibc's TLS.
 When `__rseq_size` is 0 or the symbols are missing, this crate owns a
 32-byte `Registration` TLS area and unregisters it at thread exit.
-Every kernel registration is 32 bytes. `__rseq_size` on this glibc is
-20 (legacy report); `mm_cid` liveness is `AT_RSEQ_FEATURE_SIZE`.
+A legacy 32-byte registration does not get a live `slice_ctrl` (upstream
+bumped the feature size to 33 with a trailing reserved byte).
+`__rseq_size` on this glibc is 20 (legacy report); `mm_cid` liveness is
+`AT_RSEQ_FEATURE_SIZE`.
 
 User-space may write **`rseq_cs` only**. `cpu_id`, `cpu_id_start`,
 `node_id`, `mm_cid`, and feature `flags` are kernel-owned. Optimized
@@ -174,7 +178,9 @@ No per-op fence. No rseq_cs clear after commit (kernel clears on preempt).
 RSEQ path never locks or CASes. No locked twin in this crate.
 Never GlobalAlloc (no Vec / Box / String / HashMap). mmap is the OS boundary.
 Cold paths may use OnceLock and File into a stack buffer.
-Workspace lints. missing_docs deny. unsafe_op_in_unsafe_fn deny. Clippy defaults.
+Package lints, no `allow` anywhere: missing_docs deny, unsafe_op_in_unsafe_fn
+deny, unreachable_pub warn, missing_debug_implementations warn, clippy
+undocumented_unsafe_blocks deny, clippy defaults otherwise.
 ```
 
 Crate-owned `Words` may `mmap` / `munmap`. That is the OS boundary, not
@@ -215,6 +221,12 @@ abort restarts at the signed IP. Index mismatch returns `Error::Abort`.
 No `cpu_id_start` pre-read and recheck.
 
 ## Releases
+
+This section is the changelog. GitHub Releases mirror each entry.
+
+Merge strategy on `main`: squash-merge so subjects carry `(#N)`. Tags are
+annotated (`git tag -a`). Lightweight tags from 0.5.0 / 0.6.0 stay as-is;
+new releases are annotated.
 
 ### v0.1.0 — x86_64 word ops (released)
 
@@ -265,12 +277,18 @@ const offset. `Cid` only from `Thread::cid`. `Word::new` is safe.
 
 `NodeId`, `Thread::cpu_id_start` (read only), `Thread::cpu` /
 `Thread::node` fallbacks, `Thread::prepare_unload`, `Thread::slice_ctrl`,
-`Rseq::available`, `Rseq::fence_all`. No new CS.
+`Rseq::available`, `Rseq::fence_all`. No new CS. `slice_ctrl` is gated on
+registration size ≥ 33, not auxv alone.
+
+### v0.7.0 — dual compare
+
+`Thread::compare_exchange_if` (`rseq_load_cbne_load_cbne_store`). Two
+compares, one committing store to `word`. `other.key` must equal
+`word.key` or `Abort` before the CS. No Release variant: librseq has none.
 
 ### Later
 
 ```text
-compare_exchange_if           — dual compare, still one commit
 load_if_ne / fetch_add_at     — pointer chase in the CS
 store_if_copy + *_release     — memcpy scratch and Release
 1.0 freeze                    — rseq.h map

@@ -42,6 +42,20 @@ pub(crate) unsafe fn store_if<const ID_OFF: usize>(
     Attempt::Abort
 }
 
+/// # Safety
+/// Unused: this target has no CS.
+pub(crate) unsafe fn compare_exchange_if<const ID_OFF: usize>(
+    _area: NonNull<Area>,
+    _word: *mut AtomicUsize,
+    _id: u32,
+    _expect: usize,
+    _new: usize,
+    _other: *mut AtomicUsize,
+    _other_expect: usize,
+) -> Attempt {
+    Attempt::Abort
+}
+
 pub(crate) struct Registration;
 
 impl Registration {
@@ -50,7 +64,7 @@ impl Registration {
     }
 }
 
-pub(crate) fn glibc_offset() -> Option<isize> {
+pub(crate) fn glibc_area_info() -> Option<(isize, usize)> {
     None
 }
 

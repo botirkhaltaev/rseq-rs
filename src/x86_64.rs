@@ -200,6 +200,81 @@ pub(crate) unsafe fn store_if<const ID_OFF: usize>(
     Attempt::from_status(status, current)
 }
 
+/// # Safety
+/// `area` is this thread's rseq TLS; `word` and `other` are live `AtomicUsize`s.
+#[inline]
+pub(crate) unsafe fn compare_exchange_if<const ID_OFF: usize>(
+    area: NonNull<Area>,
+    word: *mut AtomicUsize,
+    id: u32,
+    expect: usize,
+    new: usize,
+    other: *mut AtomicUsize,
+    other_expect: usize,
+) -> Attempt {
+    let current: usize;
+    let status: u64;
+    // SAFETY: `area` is this thread's rseq TLS; both words are live usizes.
+    unsafe {
+        core::arch::asm!(
+            ".pushsection __rseq_cs, \"aw\"",
+            ".balign 32",
+            "59:",
+            ".long 0",
+            ".long 0",
+            ".quad 52f",
+            ".quad (56f - 52f)",
+            ".quad 57f",
+            ".popsection",
+            "jmp 57f",
+            ".long {sig}",
+            "57:",
+            "lea {tmp}, [rip + 59b]",
+            "mov qword ptr [{rseq} + {cs_off}], {tmp}",
+            "52:",
+            "mov {got:e}, dword ptr [{rseq} + {id_off}]",
+            "cmp {got:e}, {id:e}",
+            "jne 55f",
+            "mov {current}, qword ptr [{word}]",
+            "cmp {current}, {expect}",
+            "jne 54f",
+            "mov {other_val}, qword ptr [{other}]",
+            "cmp {other_val}, {other_expect}",
+            "jne 53f",
+            "mov qword ptr [{word}], {new}",
+            "56:",
+            "xor {status:e}, {status:e}",
+            "jmp 50f",
+            "53:",
+            "mov {current}, {other_val}",
+            "54:",
+            "mov {status:e}, 1",
+            "jmp 50f",
+            "55:",
+            "xor {current:e}, {current:e}",
+            "mov {status:e}, 2",
+            "50:",
+            rseq = in(reg) area.as_ptr(),
+            word = in(reg) word,
+            id = in(reg) id,
+            expect = in(reg) expect,
+            new = in(reg) new,
+            other = in(reg) other,
+            other_expect = in(reg) other_expect,
+            got = out(reg) _,
+            tmp = out(reg) _,
+            other_val = out(reg) _,
+            current = out(reg) current,
+            status = out(reg) status,
+            sig = const SIG,
+            id_off = const ID_OFF,
+            cs_off = const CS_OFF,
+            options(nostack),
+        );
+    }
+    Attempt::from_status(status, current)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::abi::SIG;
