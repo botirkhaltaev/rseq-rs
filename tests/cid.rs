@@ -33,16 +33,22 @@ fn cid_ops() {
     let o = Word::new(&other_word, cid);
     assert_eq!(thread.compare_exchange_if(w, 9, 10, o, 1), Ok(9));
 
-    let other = std::thread::scope(|scope| {
-        scope
-            .spawn(|| rseq.bind().expect("child bind").cid().expect("child cid"))
-            .join()
-            .expect("child")
+    // Keep the child live so its `mm_cid` is not recycled onto this thread.
+    std::thread::scope(|scope| {
+        let (ready, wait_ready) = std::sync::mpsc::channel();
+        let (release, wait_release) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let child = rseq.bind().expect("child bind");
+            ready.send(child.cid().expect("child cid")).expect("ready");
+            wait_release.recv().expect("release");
+        });
+        let other = wait_ready.recv().expect("child cid");
+        if other != cid {
+            let w = words.get(other).expect("other cid");
+            assert_eq!(thread.compare_exchange(w, 0, 1), Err(Error::Abort));
+        }
+        release.send(()).expect("release");
     });
-    if other != cid {
-        let w = words.get(other).expect("other cid");
-        assert_eq!(thread.compare_exchange(w, 0, 1), Err(Error::Abort));
-    }
 }
 
 #[test]
