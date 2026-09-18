@@ -17,12 +17,23 @@ enum Mode {
     SelfRegistered,
 }
 
+/// Which rseq presence query to run. librseq `rseq_available`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Available {
+    /// The `rseq` syscall exists (`EINVAL` on a null probe).
+    Kernel,
+    /// libc exports `__rseq_offset` / `__rseq_size` / `__rseq_flags`.
+    Libc,
+}
+
 /// Process-wide rseq registration. `Copy`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rseq {
     mode: Mode,
     cpus: Cpus,
+    node: bool,
     cid: bool,
+    slice: bool,
 }
 
 impl Rseq {
@@ -32,6 +43,15 @@ impl Rseq {
     #[must_use]
     pub fn new() -> Option<Self> {
         *STATE.get_or_init(Self::init)
+    }
+
+    /// librseq `rseq_available`. Does not require [`Self::new`].
+    #[must_use]
+    pub fn available(query: Available) -> bool {
+        match query {
+            Available::Kernel => registration::kernel_available(),
+            Available::Libc => registration::libc_available(),
+        }
     }
 
     /// Bind this thread's area. `#[cold]`; store the `Thread` in caller TLS.
@@ -44,17 +64,22 @@ impl Rseq {
         if id == CPU_UNINIT || id == CPU_REG_FAILED {
             return None;
         }
-        Some(Thread::new(area, self.cid))
+        Some(Thread::new(area, self.node, self.cid, self.slice))
     }
 
     /// Expedited RSEQ membarrier targeted at `cpu`.
     /// Registers the command on first use.
     ///
-    /// A cid word has no CPU. Draining one needs a fence on every CPU (or
-    /// an un-targeted membarrier). `fence_all` is a later item.
+    /// A cid word has no CPU. Draining one needs [`Self::fence_all`].
     #[must_use]
     pub fn fence(self, cpu: CpuId) -> bool {
         cpu.get() < self.cpus.get() && Membarrier::fence(cpu)
+    }
+
+    /// Expedited RSEQ membarrier on every CPU. Use this to drain a cid word.
+    #[must_use]
+    pub fn fence_all(self) -> bool {
+        Membarrier::fence_all()
     }
 
     /// CPU count used to size the per-CPU word region.
@@ -79,7 +104,9 @@ impl Rseq {
         Some(Self {
             mode,
             cpus: Cpus::possible()?,
+            node: registration::node_supported(),
             cid: registration::cid_supported(),
+            slice: registration::slice_supported(),
         })
     }
 
