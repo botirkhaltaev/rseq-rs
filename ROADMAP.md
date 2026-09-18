@@ -64,6 +64,8 @@ t.store_if(w, expect, new, side, v)?; // scratch then commit
 - `CpuId` — newtype `u32`. `Thread::cpu_id() -> Option<CpuId>`.
 - `Cid` — newtype `u32`. Only from `Thread::cid() -> Option<Cid>` when
   the kernel populates `mm_cid`.
+- `NodeId` — newtype `u32`. `Thread::node_id() -> Option<NodeId>`.
+- `Available` — `Kernel` / `Libc` for `Rseq::available`.
 - `Index` — sealed marker. `CpuId` and `Cid` only.
 - `Error` — `Miss(usize)` or `Abort`. Exhaustive: the CS has two outcomes.
 
@@ -80,8 +82,7 @@ fallback is the caller's `AtomicUsize`, not a locked twin in this crate.
 
 `Rseq::fence` is optional. First call registers RSEQ membarrier; word ops
 never fence. `fence` targets a CPU; a cid word has no CPU. Draining a
-cid word needs a fence on every CPU (or the un-targeted command).
-`Rseq::fence_all` is a later item.
+cid word is `Rseq::fence_all`.
 
 Other targets: types exist; `new` returns `None`. Dependents compile
 everywhere. Word width is `usize` (librseq `intptr_t`). Linux aarch64 uses
@@ -185,8 +186,8 @@ Standalone crate. Full RSEQ impl on `linux + x86_64` and `linux + aarch64`.
 
 ```text
 src/lib.rs         re-exports
-src/rseq.rs        Rseq::new / bind / fence / words
-src/thread.rs      Thread, CpuId, Cid, Index, compare_exchange / fetch_add / store_if
+src/rseq.rs        Rseq::new / bind / fence / fence_all / available / words
+src/thread.rs      Thread, CpuId, Cid, NodeId, Index, compare_exchange / fetch_add / store_if
 src/registration.rs Registration (self-register TLS)
 src/fallback.rs    CS and Registration stubs
 src/attempt.rs     CS Attempt
@@ -258,13 +259,24 @@ rseq. `node_id` / `mm_cid` accessors are later.
 `Cid` and sealed `Index`. `Thread::cid()` when `AT_RSEQ_FEATURE_SIZE >=
 28`. `Word<K>` / word ops confirm `area.mm_cid` or `area.cpu_id` via one
 const offset. `Cid` only from `Thread::cid`. `Word::new` is safe.
-`Rseq::new`. Overlay of `cpu_id_start` stays out. `fence_all` for cid
-drain is later.
+`Rseq::new`. Overlay of `cpu_id_start` stays out.
 
-### Later — magazine
+### v0.6.0 — remaining `rseq.h` reads
 
-Index stacks as a layer on these ops (or a dedicated CS if the index-stack
-sequence stays tighter than two word ops). Not v0.1.
+`NodeId`, `Thread::cpu_id_start` (read only), `Thread::cpu` /
+`Thread::node` fallbacks, `Thread::prepare_unload`, `Thread::slice_ctrl`,
+`Rseq::available`, `Rseq::fence_all`. No new CS.
+
+### Later
+
+```text
+compare_exchange_if           — dual compare, still one commit
+load_if_ne / fetch_add_at     — pointer chase in the CS
+store_if_copy + *_release     — memcpy scratch and Release
+1.0 freeze                    — rseq.h map
+RSEQ V2 / time-slice CS
+mempool / magazine as a different crate or later layer
+```
 
 ## Out
 

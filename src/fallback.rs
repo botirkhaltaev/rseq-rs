@@ -54,7 +54,23 @@ pub(crate) fn glibc_offset() -> Option<isize> {
     None
 }
 
+pub(crate) fn node_supported() -> bool {
+    false
+}
+
 pub(crate) fn cid_supported() -> bool {
+    false
+}
+
+pub(crate) fn slice_supported() -> bool {
+    false
+}
+
+pub(crate) fn kernel_available() -> bool {
+    false
+}
+
+pub(crate) fn libc_available() -> bool {
     false
 }
 

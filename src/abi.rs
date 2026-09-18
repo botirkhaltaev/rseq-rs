@@ -10,7 +10,7 @@ pub(crate) struct Area {
     pub flags: u32,
     pub node_id: u32,
     pub mm_cid: u32,
-    pub _pad: u32,
+    pub slice_ctrl: u32,
 }
 
 /// Smallest `__rseq_size` glibc reports when it registered an area.
@@ -31,8 +31,12 @@ pub(crate) const CS_OFF: usize = 8;
 pub(crate) const MM_CID_OFF: usize = 24;
 /// `AT_RSEQ_FEATURE_SIZE` auxv type.
 pub(crate) const AT_RSEQ_FEATURE_SIZE: libc::c_ulong = 27;
+/// `offsetofend(struct rseq, node_id)`. Kernel populates `node_id` at this size.
+pub(crate) const NODE_FEATURE_SIZE: libc::c_ulong = 24;
 /// `offsetofend(struct rseq, mm_cid)`. Kernel populates `mm_cid` at this size.
 pub(crate) const CID_FEATURE_SIZE: libc::c_ulong = 28;
+/// `offsetofend(struct rseq, slice_ctrl)`. Kernel populates `slice_ctrl` at this size.
+pub(crate) const SLICE_FEATURE_SIZE: libc::c_ulong = 32;
 
 #[cfg(test)]
 mod tests {
@@ -47,6 +51,7 @@ mod tests {
         assert_eq!(offset_of!(Area, flags), 16);
         assert_eq!(offset_of!(Area, node_id), 20);
         assert_eq!(offset_of!(Area, mm_cid), 24);
+        assert_eq!(offset_of!(Area, slice_ctrl), 28);
         assert_eq!(size_of::<Area>(), 32);
         assert_eq!(GLIBC_SIZE_MIN, 20);
         assert_eq!(FLAG_UNREGISTER, 1);
@@ -58,6 +63,8 @@ mod tests {
         assert_eq!(CS_OFF, 8);
         assert_eq!(MM_CID_OFF, 24);
         assert_eq!(AT_RSEQ_FEATURE_SIZE, 27);
+        assert_eq!(NODE_FEATURE_SIZE, 24);
         assert_eq!(CID_FEATURE_SIZE, 28);
+        assert_eq!(SLICE_FEATURE_SIZE, 32);
     }
 }

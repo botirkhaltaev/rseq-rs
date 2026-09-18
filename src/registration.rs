@@ -4,7 +4,7 @@ use core::{cell::UnsafeCell, mem::size_of, ptr::NonNull};
 
 use crate::abi::{
     AT_RSEQ_FEATURE_SIZE, Area, CID_FEATURE_SIZE, CPU_REG_FAILED, CPU_UNINIT, FLAG_UNREGISTER,
-    GLIBC_SIZE_MIN, SIG,
+    GLIBC_SIZE_MIN, NODE_FEATURE_SIZE, SIG, SLICE_FEATURE_SIZE,
 };
 
 thread_local! {
@@ -27,7 +27,7 @@ impl Registration {
                 flags: 0,
                 node_id: 0,
                 mm_cid: 0,
-                _pad: 0,
+                slice_ctrl: 0,
             }),
         }
     }
@@ -67,9 +67,36 @@ pub(crate) fn glibc_offset() -> Option<isize> {
     Some(unsafe { offset_p.cast::<libc::ptrdiff_t>().read() })
 }
 
+pub(crate) fn node_supported() -> bool {
+    // SAFETY: `getauxval` looks up an auxv entry; 0 if the type is absent.
+    unsafe { libc::getauxval(AT_RSEQ_FEATURE_SIZE) >= NODE_FEATURE_SIZE }
+}
+
 pub(crate) fn cid_supported() -> bool {
     // SAFETY: `getauxval` looks up an auxv entry; 0 if the type is absent.
     unsafe { libc::getauxval(AT_RSEQ_FEATURE_SIZE) >= CID_FEATURE_SIZE }
+}
+
+pub(crate) fn slice_supported() -> bool {
+    // SAFETY: `getauxval` looks up an auxv entry; 0 if the type is absent.
+    unsafe { libc::getauxval(AT_RSEQ_FEATURE_SIZE) >= SLICE_FEATURE_SIZE }
+}
+
+/// `SYS_rseq(NULL, 0, 0, 0)` is `EINVAL` when the syscall exists, `ENOSYS` if not.
+pub(crate) fn kernel_available() -> bool {
+    // SAFETY: null probe; the kernel rejects it without touching memory.
+    let rc = unsafe { libc::syscall(libc::SYS_rseq, core::ptr::null::<u8>(), 0, 0, 0) };
+    rc == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL)
+}
+
+/// libc exports the three rseq TLS symbols.
+pub(crate) fn libc_available() -> bool {
+    // SAFETY: `dlsym` looks up exported glibc symbols. Null means absent.
+    unsafe {
+        !libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_size".as_ptr()).is_null()
+            && !libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_offset".as_ptr()).is_null()
+            && !libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_flags".as_ptr()).is_null()
+    }
 }
 
 pub(crate) fn glibc_area(offset: isize) -> Option<NonNull<Area>> {
