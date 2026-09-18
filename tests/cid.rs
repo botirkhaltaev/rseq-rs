@@ -24,6 +24,9 @@ fn cid_ops() {
     let s = Word::new(&side, cid);
     assert_eq!(thread.store_if(w, 8, 9, s, 3), Ok(8));
     assert_eq!(side.load(Ordering::Relaxed), 3);
+    let other_word = AtomicUsize::new(1);
+    let o = Word::new(&other_word, cid);
+    assert_eq!(thread.compare_exchange_if(w, 9, 10, o, 1), Ok(9));
 
     let other = std::thread::scope(|scope| {
         scope

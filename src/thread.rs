@@ -258,6 +258,57 @@ impl Thread {
         }
     }
 
+    /// Compare `word` to `expect` and `other` to `other_expect`, then store `new`.
+    ///
+    /// librseq `cmpeqv_cmpeqv_storev` / `rseq_load_cbne_load_cbne_store`.
+    /// Scratch-free. One committing store to `word`.
+    ///
+    /// `other.key` must equal `word.key` or this returns [`Error::Abort`]
+    /// without entering the CS.
+    ///
+    /// [`Error::Miss`] carries the seen value of the compare that failed
+    /// (`word` first, else `other`).
+    ///
+    /// One attempt. Kernel preemption restarts inside the CS. Index mismatch
+    /// is [`Error::Abort`] — re-read [`Self::cpu_id`] or [`Self::cid`] and
+    /// pick a new word.
+    ///
+    /// ```compile_fail
+    /// use rseq_rs::{Cid, CpuId, Thread, Word};
+    /// fn mix(
+    ///     t: &Thread,
+    ///     cpu: Word<'_, CpuId>,
+    ///     cid: Word<'_, Cid>,
+    /// ) {
+    ///     let _ = t.compare_exchange_if(cpu, 0, 1, cid, 2);
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Miss`] when either compare fails. [`Error::Abort`] when the
+    /// keys differ, this thread's index is not `word.key`, or rseq is
+    /// unavailable on this target.
+    #[inline]
+    pub fn compare_exchange_if<K: Index>(
+        &self,
+        word: Word<'_, K>,
+        expect: usize,
+        new: usize,
+        other: Word<'_, K>,
+        other_expect: usize,
+    ) -> Result<usize, Error> {
+        if other.key() != word.key() {
+            return Err(Error::Abort);
+        }
+        // SAFETY: `self` is bound; both words are live AtomicUsizes for `word.key`.
+        match Self::cas_if::<K>(self.area, word, expect, new, other, other_expect) {
+            Attempt::Ok(old) => Ok(old),
+            Attempt::Miss(current) => Err(Error::Miss(current)),
+            Attempt::Abort => Err(Error::Abort),
+        }
+    }
+
     /// Add `count` to `word`. Returns the previous value.
     ///
     /// One attempt. Kernel preemption restarts inside the CS. Index mismatch
@@ -341,6 +392,46 @@ impl Thread {
                 cs::compare_exchange::<CPU_ID_OFF>(area, ptr, id, expect, new)
             } else {
                 cs::compare_exchange::<MM_CID_OFF>(area, ptr, id, expect, new)
+            }
+        }
+    }
+
+    fn cas_if<K: Index>(
+        area: NonNull<Area>,
+        word: Word<'_, K>,
+        expect: usize,
+        new: usize,
+        other: Word<'_, K>,
+        other_expect: usize,
+    ) -> Attempt {
+        const {
+            assert!(K::OFF == CPU_ID_OFF || K::OFF == MM_CID_OFF);
+        }
+        let ptr = word.as_ptr();
+        let id = word.key().get();
+        let other_ptr = other.as_ptr();
+        // SAFETY: `area` is this thread's rseq TLS; both words are live AtomicUsizes.
+        unsafe {
+            if K::OFF == CPU_ID_OFF {
+                cs::compare_exchange_if::<CPU_ID_OFF>(
+                    area,
+                    ptr,
+                    id,
+                    expect,
+                    new,
+                    other_ptr,
+                    other_expect,
+                )
+            } else {
+                cs::compare_exchange_if::<MM_CID_OFF>(
+                    area,
+                    ptr,
+                    id,
+                    expect,
+                    new,
+                    other_ptr,
+                    other_expect,
+                )
             }
         }
     }

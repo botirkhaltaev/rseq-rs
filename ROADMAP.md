@@ -267,10 +267,15 @@ const offset. `Cid` only from `Thread::cid`. `Word::new` is safe.
 `Thread::node` fallbacks, `Thread::prepare_unload`, `Thread::slice_ctrl`,
 `Rseq::available`, `Rseq::fence_all`. No new CS.
 
+### v0.7.0 — dual compare
+
+`Thread::compare_exchange_if` (`rseq_load_cbne_load_cbne_store`). Two
+compares, one committing store to `word`. `other.key` must equal
+`word.key` or `Abort` before the CS. No Release variant: librseq has none.
+
 ### Later
 
 ```text
-compare_exchange_if           — dual compare, still one commit
 load_if_ne / fetch_add_at     — pointer chase in the CS
 store_if_copy + *_release     — memcpy scratch and Release
 1.0 freeze                    — rseq.h map

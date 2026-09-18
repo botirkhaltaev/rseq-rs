@@ -64,6 +64,11 @@ loop {
 `cmpeqv_trystorev_storev`: scratch store to `side`, then one committing
 store to `word`. `side.key` must equal `word.key`.
 
+`compare_exchange_if(word, expect, new, other, other_expect)` is librseq
+`cmpeqv_cmpeqv_storev`: both compares must pass, then one committing store
+to `word`. `other.key` must equal `word.key`. `Miss` carries the value of
+the compare that failed, `word` first.
+
 On kernels that populate `mm_cid`, index by cid instead of `cpu_id`:
 
 ```rust
